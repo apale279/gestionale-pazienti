@@ -36,7 +36,7 @@ export function docFileName(d) {
   return `${day}_${sanitizeName(d.tipo || "Documento")}_${sanitizeName(d.paziente || "Paziente")}.docx`;
 }
 
-function dataUrlToBytes(url) {
+export function dataUrlToBytes(url) {
   const b = atob(url.split(",")[1]);
   const u = new Uint8Array(b.length);
   for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
@@ -45,7 +45,7 @@ function dataUrlToBytes(url) {
 function imgSize(url) {
   return new Promise((res) => { const i = new Image(); i.onload = () => res({ w: i.naturalWidth, h: i.naturalHeight }); i.onerror = () => res({ w: 1, h: 1 }); i.src = url; });
 }
-async function imageRun(url, maxW, maxH) {
+export async function imageRun(url, maxW, maxH) {
   const { w, h } = await imgSize(url);
   const s = Math.min(maxW / w, maxH / h);
   return new docx.ImageRun({ data: dataUrlToBytes(url), type: "png", transformation: { width: Math.max(1, Math.round(w * s)), height: Math.max(1, Math.round(h * s)) } });
@@ -104,6 +104,7 @@ export async function buildDocx(profile, d, layout) {
   const title = (d.titolo || d.tipo || "").toUpperCase();
   if (title) body.push(new D.Paragraph({ alignment: L.titleAlign === "left" ? D.AlignmentType.LEFT : D.AlignmentType.CENTER, spacing: { before: 200, after: 240 }, children: [new D.TextRun({ text: title, bold: true, size: Math.round((L.bodySize + 3) * 2) })] }));
   body.push(new D.Paragraph({ spacing: { after: 60 }, children: [new D.TextRun({ text: "Paziente: ", bold: true }), new D.TextRun(d.paziente || "")] }));
+  for (const [l, v] of d.extraLines || []) body.push(new D.Paragraph({ spacing: { after: 60 }, children: [new D.TextRun({ text: l + ": ", bold: true }), new D.TextRun(String(v))] }));
   body.push(new D.Paragraph({ spacing: { after: 240 }, children: [new D.TextRun({ text: "Data: ", bold: true }), new D.TextRun(itDate(d.data))] }));
   for (const t of (d.testo || "").split("\n")) {
     body.push(new D.Paragraph({ spacing: { after: 100 }, alignment: L.justify ? D.AlignmentType.JUSTIFIED : D.AlignmentType.LEFT, children: [new D.TextRun({ text: t })] }));
@@ -131,7 +132,7 @@ export async function buildDocx(profile, d, layout) {
     creator: p.nome || "Gestionale",
     styles: { default: { document: { run: { font: L.font, size: Math.round(L.bodySize * 2) } } } },
     sections: [{
-      properties: { page: { margin: { top: mt, bottom: mb, left: ml, right: mr } } },
+      properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: mt, bottom: mb, left: ml, right: mr } } },
       headers: { default: new D.Header({ children: hdr }) },
       footers: { default: footer },
       children: body,
@@ -160,7 +161,7 @@ export function previewHtml(profile, d, esc, layout) {
   return `<div class="sheet" style="font-family:'${L.font}',Calibri,sans-serif;font-size:${px(L.bodySize)};padding:${pad}">
     <div style="${L.line ? `border-bottom:2px solid ${L.lineColor};` : ""}padding-bottom:8px;margin-bottom:14px">${head || "&nbsp;"}</div>
     <h3 style="text-align:${L.titleAlign};font-size:${px(L.bodySize + 3)}">${esc((d.titolo || d.tipo || "").toUpperCase())}</h3>
-    <p style="margin:0 0 10px"><b>Paziente:</b> ${esc(d.paziente || "")}<br><b>Data:</b> ${esc(itDate(d.data))}</p>
+    <p style="margin:0 0 10px"><b>Paziente:</b> ${esc(d.paziente || "")}${(d.extraLines || []).map(([l, v]) => `<br><b>${esc(l)}:</b> ${esc(v)}`).join("")}<br><b>Data:</b> ${esc(itDate(d.data))}</p>
     <div style="text-align:${L.justify ? "justify" : "left"}">${body}</div>
     <p style="text-align:${L.sigAlign};margin:18px 0 0">${esc([p.luogo, itDate(d.data)].filter(Boolean).join(", "))}</p>
     ${sigRow}

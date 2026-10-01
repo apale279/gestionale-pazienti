@@ -171,8 +171,9 @@ export class GraphDrive {
 export class DemoDrive {
   isDemo = true;
 
-  constructor(root) {
+  constructor(root, bmc) {
     this.root = root;
+    this.bmc = bmc;
     this.nodes = new Map(); // path -> {isFolder,size,modified,blob}
     this.seed();
   }
@@ -202,6 +203,11 @@ export class DemoDrive {
     f(".Pazienti/Neri Giulia/2026_01_27_RMN bacino.pdf", 2500000, "2026-01-27T09:00:00Z");
     f(".Pazienti/Verdi Paola.docx", 41000, "2026-04-02T09:00:00Z");
     f("Referti assistenze/Template referti.docx", 30000, "2026-01-10T09:00:00Z");
+    if (this.bmc) {
+      this.put(join(this.bmc, "Esposito Carla/2026_06_01_BMC Medical report_Esposito Carla.docx"), false, 60000, "2026-06-01T09:00:00Z");
+      this.put(join(this.bmc, "Ferrari Luigi"), true);
+      this.put(join(this.bmc, "Contratto cliente.pdf"), false, 400000, "2023-07-21T09:00:00Z");
+    }
     // File sciolti
     f("Verdi Paola.pdf", 99000, "2026-04-02T09:00:00Z");
     f("VERDI PAOLA esami.zip", 5400000, "2026-04-03T09:00:00Z");

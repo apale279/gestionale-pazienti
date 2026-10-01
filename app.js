@@ -2,6 +2,7 @@ import { CONFIG } from "./config.js";
 import { initAuth, login, logout, getClientId, saveClientId } from "./auth.js";
 import { GraphDrive, DemoDrive } from "./drive.js";
 import { scan, buildPlan, applyPlan, sanitizeName, extOf, stripExt } from "./indexer.js";
+import { DEFAULT_BMC, EMPTY_BMC_DOC, buildBmcDocx, bmcFileName, bmcHtml, printHtml } from "./bmcdoc.js";
 import { buildDocx, docFileName, previewHtml, itDate, todayISO, EMPTY_PROFILE, DEFAULT_LAYOUT, FONTS, mergeLayout } from "./docgen.js";
 
 // ---------- utilità ----------
@@ -44,10 +45,11 @@ const icon = (n) => ({ pdf: "📕", docx: "📝", doc: "📝", dotx: "📋", xls
 const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
 
 // ---------- stato ----------
-const S = { drive: null, st: { profile: { ...EMPTY_PROFILE }, layout: mergeLayout(), hiddenFolders: [] }, sc: null, q: "", account: "" };
+const S = { drive: null, st: { profile: { ...EMPTY_PROFILE }, layout: mergeLayout(), hiddenFolders: [] }, bmc: { ...DEFAULT_BMC }, meta: {}, filter: "all", sc: null, q: "", account: "" };
 const settingsPath = () => join(CONFIG.rootPath, CONFIG.appFolder, "impostazioni.json");
 const scanCfg = () => ({ ...CONFIG, hiddenFolders: S.st.hiddenFolders });
-const patientByName = (n) => S.sc && S.sc.patients.find((p) => p.name === n);
+const allPatients = () => (S.sc ? [...S.sc.patients, ...S.sc.bmc] : []);
+const patientByKey = (k) => allPatients().find((p) => p.path === k);
 
 async function loadSettings() {
   try {
@@ -71,7 +73,7 @@ async function refresh(silent = false) {
 // ---------- shell ----------
 function buildShell() {
   const root = $("#app");
-  root.replaceChildren(
+  root.replaceChildren(...[
     h("header", { class: "top" },
       h("button", { class: "iconbtn back", title: "Indietro", onclick: () => (location.hash = "#/") }, "‹"),
       h("a", { class: "brand", href: "#/" }, "Pazienti"),
@@ -80,7 +82,8 @@ function buildShell() {
       h("a", { class: "iconbtn", title: "Layout referti", href: "#/layout" }, "✎"),
       h("a", { class: "iconbtn", title: "Impostazioni", href: "#/impostazioni" }, "⚙︎")),
     S.drive.isDemo ? h("div", { class: "demo" }, "Modalità demo: dati inventati, nulla viene salvato su OneDrive. ", h("a", { href: location.pathname }, "Esci dalla demo")) : null,
-    h("div", { class: "cols" }, h("aside", { id: "list" }), h("main", { id: "detail" })));
+    h("div", { class: "cols" }, h("aside", { id: "list" }), h("main", { id: "detail" })),
+  ].filter(Boolean));
 }
 
 function route() {
@@ -100,7 +103,8 @@ function render() {
   else if (r.name === "riordina") d.append(viewReorder());
   else if (r.name === "impostazioni") d.append(viewSettings());
   else if (r.name === "layout") d.append(viewLayout());
-  else if (r.name === "paziente") d.append(viewNewPatient());
+  else if (r.name === "paziente") d.append(viewNewPatient(r.arg === "bmc"));
+  else if (r.name === "bmc") d.append(viewBmcDoc(r.arg));
   else d.append(viewHome());
   window.scrollTo(0, 0);
 }
@@ -114,8 +118,9 @@ function renderList() {
     list.append(
       h("div", { class: "searchrow" },
         h("input", { id: "q", type: "search", placeholder: "Cerca paziente o documento…", autocomplete: "off", value: S.q, oninput: (e) => { S.q = e.target.value; renderItems(); } }),
-        h("a", { class: "btn primary", href: "#/paziente" }, "+ Nuovo")),
-      h("div", { id: "banner" }), h("div", { id: "items" }));
+        h("a", { class: "btn primary", href: "#/paziente" }, "+ Nuovo"),
+        h("a", { class: "btn", href: "#/paziente/bmc", title: "Nuovo paziente BMC" }, "+ BMC")),
+      h("div", { id: "chips", class: "chips" }), h("div", { id: "banner" }), h("div", { id: "items" }));
   }
   const nl = S.sc.loose.length;
   $("#banner").replaceChildren(nl ? h("a", { class: "banner", href: "#/riordina" }, `⚠︎ ${nl} file sciolti da sistemare ›`) : "");
@@ -124,10 +129,13 @@ function renderList() {
 function renderItems(active) {
   if (active === undefined) { const r = route(); active = r.name === "p" ? r.arg : null; }
   const q = norm(S.q.trim());
-  const ps = S.sc.patients.filter((p) => !q || norm(p.name).includes(q) || p.files.some((f) => norm(f.name).includes(q)));
+  $("#chips").replaceChildren(...[["all", "Tutti"], ["studio", "Studio"], ["bmc", "BMC"]].map(([v, t]) =>
+    h("button", { class: "chip" + (S.filter === v ? " on" : ""), onclick: () => { S.filter = v; renderItems(); } }, t)));
+  const pool = S.filter === "studio" ? S.sc.patients : S.filter === "bmc" ? S.sc.bmc : allPatients().sort((a, b) => a.name.localeCompare(b.name, "it"));
+  const ps = pool.filter((p) => !q || norm(p.name).includes(q) || p.files.some((f) => norm(f.name).includes(q)));
   $("#items").replaceChildren(...[
-    ...ps.map((p) => h("a", { class: "pitem" + (p.name === active ? " active" : ""), href: "#/p/" + encodeURIComponent(p.name) },
-      h("div", { class: "pname" }, p.name),
+    ...ps.map((p) => h("a", { class: "pitem" + (p.path === active ? " active" : ""), href: "#/p/" + encodeURIComponent(p.path) },
+      h("div", { class: "pname" }, p.name, p.group === "BMC" ? h("span", { class: "badge" }, "BMC") : null),
       h("div", { class: "pmeta" }, `${p.files.length} ${p.files.length === 1 ? "documento" : "documenti"}${p.lastDate ? " · ultimo " + itDate(p.lastDate) : ""}`))),
     ps.length ? null : h("p", { class: "muted pad" }, q ? "Nessun risultato." : "Nessun paziente."),
   ].filter(Boolean));
@@ -135,12 +143,12 @@ function renderItems(active) {
 
 // ---------- home (desktop, nessun paziente selezionato) ----------
 function viewHome() {
-  const n = S.sc.patients.reduce((a, p) => a + p.files.length, 0);
+  const n = allPatients().reduce((a, p) => a + p.files.length, 0);
   return h("section", { class: "card homecard" },
     h("h2", {}, "Gestionale pazienti"),
-    h("p", {}, `${S.sc.patients.length} pazienti · ${n} documenti indicizzati.`),
+    h("p", {}, `${allPatients().length} pazienti (${S.sc.bmc.length} BMC) · ${n} documenti indicizzati.`),
     h("p", { class: "muted" }, "Seleziona un paziente dall'elenco, oppure creane uno nuovo."),
-    h("a", { class: "btn primary", href: "#/paziente" }, "+ Nuovo paziente"));
+    h("div", { class: "btnrow wrap", style: "justify-content:center" }, h("a", { class: "btn primary", href: "#/paziente" }, "+ Nuovo paziente"), h("a", { class: "btn", href: "#/paziente/bmc" }, "+ Nuovo paziente BMC")));
 }
 
 // ---------- scheda paziente ----------
@@ -178,8 +186,9 @@ async function openFolderOnline(path) {
   } catch (e) { if (w) w.close(); toast(e.message, true); }
 }
 
-function viewPatient(name) {
-  const p = patientByName(name);
+function viewPatient(key) {
+  const p = patientByKey(key);
+  const pk = p && encodeURIComponent(p.path);
   if (!p) return h("section", { class: "card" }, h("p", {}, "Paziente non trovato."), h("a", { class: "btn", href: "#/" }, "Torna all'elenco"));
   const pick = (cap) => {
     const inp = h("input", { type: "file", multiple: true, accept: cap ? "image/*" : "", capture: cap ? "environment" : null, hidden: true,
@@ -191,13 +200,15 @@ function viewPatient(name) {
   const keys = [...groups.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b, "it")));
   return h("section", {},
     h("div", { class: "card" },
-      h("h2", {}, p.name),
+      h("h2", {}, p.name, p.group === "BMC" ? h("span", { class: "badge" }, "BMC") : null),
       h("p", { class: "muted" }, `${p.files.length} documenti`),
       h("div", { class: "btnrow wrap" },
-        h("a", { class: "btn primary", href: "#/nuovo/" + encodeURIComponent(p.name) }, "📝 Nuovo documento"),
+        p.group === "BMC" ? h("a", { class: "btn primary", href: "#/bmc/" + pk }, "📋 Nuovo referto BMC") : null,
+        h("a", { class: p.group === "BMC" ? "btn" : "btn primary", href: "#/nuovo/" + pk }, "📝 Nuovo documento"),
         h("button", { class: "btn", onclick: () => pick(false) }, "📎 Allega file"),
         h("button", { class: "btn", onclick: () => pick(true) }, "📷 Scatta foto"),
         h("button", { class: "btn", onclick: () => openFolderOnline(p.path) }, "☁︎ Cartella su OneDrive"))),
+    cardAnagrafica(p), cardNote(p),
     p.files.length ? keys.map((k) => h("div", { class: "card" },
       k ? h("h4", {}, "📁 " + k) : h("h4", {}, "Documenti"),
       h("ul", { class: "files" }, groups.get(k).map((f) => fileRow(f))))) :
@@ -245,24 +256,26 @@ function attachFlow(p, files) {
 }
 
 // ---------- nuovo paziente ----------
-function viewNewPatient() {
+function viewNewPatient(isBmc) {
+  const root = isBmc ? CONFIG.bmcPath : CONFIG.rootPath;
+  const pool = isBmc ? S.sc.bmc : S.sc.patients;
   const cog = h("input", { id: "cog", placeholder: "Cognome", autocapitalize: "words", autocomplete: "off" });
   const nom = h("input", { id: "nom", placeholder: "Nome", autocapitalize: "words", autocomplete: "off" });
   return h("section", { class: "card" },
-    h("h2", {}, "Nuovo paziente"),
-    h("p", { class: "muted" }, "Verrà creata la cartella “Cognome Nome” dentro la cartella Pazienti."),
+    h("h2", {}, isBmc ? "Nuovo paziente BMC" : "Nuovo paziente"),
+    h("p", { class: "muted" }, isBmc ? "Verrà creata la cartella “Cognome Nome” dentro la cartella BMC." : "Verrà creata la cartella “Cognome Nome” dentro la cartella Pazienti."),
     h("label", {}, "Cognome", cog), h("label", {}, "Nome", nom),
     h("div", { class: "btnrow" },
       h("a", { class: "btn", href: "#/" }, "Annulla"),
       h("button", { class: "btn primary", onclick: async () => {
         const name = sanitizeName(`${cog.value} ${nom.value}`);
         if (!name) return toast("Inserisci almeno cognome o nome", true);
-        const dup = S.sc.patients.find((p) => norm(p.name) === norm(name));
-        if (dup) { toast("Esiste già: apro la scheda"); location.hash = "#/p/" + encodeURIComponent(dup.name); return; }
+        const dup = pool.find((p) => norm(p.name) === norm(name));
+        if (dup) { toast("Esiste già: apro la scheda"); location.hash = "#/p/" + encodeURIComponent(dup.path); return; }
         const done = busy("Creo la cartella…");
-        try { await S.drive.mkdir(CONFIG.rootPath, name); } catch (e) { done(); return toast("Errore: " + e.message, true); }
+        try { await S.drive.ensureFolder(root); await S.drive.mkdir(root, name); } catch (e) { done(); return toast("Errore: " + e.message, true); }
         done(); await refresh(true);
-        location.hash = "#/p/" + encodeURIComponent(name);
+        location.hash = "#/p/" + encodeURIComponent(join(root, name));
       } }, "Crea paziente")));
 }
 
@@ -278,10 +291,10 @@ const TEXTS = {
   Lettera: "", Nota: "",
 };
 
-function viewNewDoc(name) {
-  const p = patientByName(name);
+function viewNewDoc(key) {
+  const p = patientByKey(key);
   if (!p) return h("section", { class: "card" }, h("p", {}, "Paziente non trovato."));
-  const d = { tipo: CONFIG.docTypes[0], data: todayISO(), titolo: "", testo: TEXTS[CONFIG.docTypes[0]] || "", paziente: p.name };
+  const d = { tipo: CONFIG.docTypes[0], data: todayISO(), titolo: "", testo: TEXTS[CONFIG.docTypes[0]] || "", paziente: p.name, extraLines: [] };
   let tpl = d.testo;
   const prev = h("div", { class: "preview" });
   const upd = () => { prev.innerHTML = previewHtml(S.st.profile, d, esc, S.st.layout); };
@@ -291,6 +304,18 @@ function viewNewDoc(name) {
   const tit = h("input", { placeholder: "Titolo (se vuoto: tipo di documento)", oninput: (e) => { d.titolo = e.target.value; upd(); } });
   const ta = h("textarea", { rows: 14, value: d.testo, oninput: (e) => { d.testo = e.target.value; upd(); } });
   upd();
+  // Dati anagrafici del paziente: se inseriti, si possono riportare nel documento
+  const incl = { nascita: true, luogoNascita: true, cf: true };
+  let anag = {};
+  const anagBox = h("div", { class: "checks" });
+  const syncLines = () => { d.extraLines = ANAG_DOC.filter(([k]) => incl[k] && anag[k]).map(([k, l]) => [l, k === "nascita" ? itDate(anag[k]) : anag[k]]); upd(); };
+  loadMeta(p).then((meta) => {
+    anag = meta.anagrafica; d.paziente = patientFullName(p, meta);
+    const avail = ANAG_DOC.filter(([k]) => anag[k]);
+    anagBox.replaceChildren(...(avail.length ? [h("div", { class: "muted small full" }, "Dati del paziente da riportare nel documento:"), ...avail.map(([k, l]) =>
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!incl[k], onchange: (e) => { incl[k] = e.target.checked; syncLines(); } }), " " + l))] : []));
+    syncLines();
+  });
   const noProfile = !S.st.profile.nome;
   const make = async () => {
     const done = busy("Creo il documento…");
@@ -301,16 +326,16 @@ function viewNewDoc(name) {
       h("h2", {}, "Nuovo documento"), h("p", { class: "muted" }, "Paziente: " + p.name),
       noProfile ? h("a", { class: "banner", href: "#/layout" }, "⚠︎ Intestazione, firma e timbro non ancora impostati › ") : h("a", { class: "small", href: "#/layout" }, "✎ Modifica layout"),
       h("div", { class: "grid2" }, h("label", {}, "Tipo", tipo), h("label", {}, "Data", data)),
-      h("label", {}, "Titolo", tit), h("label", {}, "Testo", ta),
+      h("label", {}, "Titolo", tit), anagBox, h("label", {}, "Testo", ta),
       h("div", { class: "btnrow wrap" },
-        h("a", { class: "btn", href: "#/p/" + encodeURIComponent(p.name) }, "Annulla"),
+        h("a", { class: "btn", href: "#/p/" + encodeURIComponent(p.path) }, "Annulla"),
         h("button", { class: "btn", onclick: async () => { const b = await make(); if (b) saveBlob(b, docFileName(d)); } }, "⬇︎ Scarica"),
         h("button", { class: "btn primary", onclick: async () => {
           const b = await make(); if (!b) return;
           const done = busy("Salvo nella cartella del paziente…");
           try { await S.drive.upload(p.path, docFileName(d), b); toast("Documento salvato"); }
           catch (e) { done(); return toast("Errore nel salvataggio: " + e.message, true); }
-          done(); await refresh(true); location.hash = "#/p/" + encodeURIComponent(p.name);
+          done(); await refresh(true); location.hash = "#/p/" + encodeURIComponent(p.path);
         } }, "Salva su OneDrive"))),
     h("div", { class: "card" }, h("h4", {}, "Anteprima"), prev));
 }
@@ -393,6 +418,7 @@ function viewSettings() {
     h("div", { class: "card" }, h("h2", {}, "Impostazioni"),
       h("p", { class: "muted" }, "Intestazione, firma, timbro e aspetto dei documenti si modificano nell'editor di layout."),
       h("a", { class: "btn primary", href: "#/layout" }, "✎ Layout referti")),
+    cardBmcSettings(),
     h("div", { class: "card" }, h("h4", {}, "Cartelle nascoste dall'elenco"), hiddenList),
     h("div", { class: "card" }, h("h4", {}, "Account"),
       h("p", { class: "muted small" }, S.drive.isDemo ? "Modalità demo" : `Collegato a OneDrive${S.account ? " come " + S.account : ""}. Cartella: ${CONFIG.rootPath}`),
@@ -496,6 +522,191 @@ function viewLayout() {
     h("div", { class: "designer" }, controls, h("div", { class: "designer-preview" }, h("div", { class: "card" }, h("h4", {}, "Anteprima"), prev))));
 }
 
+// ---------- anagrafica e note private ----------
+// Anagrafica: nel file nascosto ".paziente.json" dentro la cartella del paziente (segue la cartella se la rinomini o sposti).
+// Note: in un file separato in _Gestionale/note/, MAI dentro la cartella del paziente e mai inserite nei documenti.
+const ANAG_FIELDS = [
+  ["cognome", "Cognome"], ["nome", "Nome"], ["nascita", "Data di nascita", "date"], ["luogoNascita", "Luogo di nascita"],
+  ["sesso", "Sesso"], ["cf", "Codice fiscale"], ["indirizzo", "Residenza"], ["telefono", "Telefono"], ["email", "Email"],
+];
+const ANAG_DOC = [["nascita", "Data di nascita"], ["luogoNascita", "Luogo di nascita"], ["cf", "Codice fiscale"], ["indirizzo", "Residenza"], ["telefono", "Telefono"], ["email", "Email"]];
+const metaPath = (p) => join(p.path, ".paziente.json");
+const notePath = (id) => join(CONFIG.rootPath, CONFIG.appFolder, "note", id + ".json");
+const bmcPath = () => join(CONFIG.rootPath, CONFIG.appFolder, "bmc.json");
+
+// Una sola copia condivisa per paziente (scheda anagrafica e note la usano insieme).
+function loadMeta(p) {
+  if (!S.meta[p.path]) {
+    S.meta[p.path] = (async () => {
+      const meta = { id: "", anagrafica: {}, readError: "" };
+      try {
+        const m = await S.drive.readJson(metaPath(p));
+        if (m) { meta.id = m.id || ""; meta.anagrafica = { ...(m.anagrafica || {}) }; }
+      } catch (e) { console.warn("anagrafica", e); meta.readError = e.message; delete S.meta[p.path]; }
+      return meta;
+    })();
+  }
+  return S.meta[p.path];
+}
+async function saveMeta(p, meta) {
+  // Se la lettura dei dati esistenti è fallita, NON si salva: si rischierebbe di sovrascriverli con un file vuoto.
+  if (meta.readError) throw new Error("Non riesco a leggere i dati esistenti (" + meta.readError + "). Aggiorna la pagina e riprova.");
+  if (!meta.id) meta.id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+  await S.drive.writeJson(metaPath(p), { id: meta.id, anagrafica: meta.anagrafica });
+}
+const patientFullName = (p, meta) => {
+  const a = (meta && meta.anagrafica) || {};
+  return [a.cognome, a.nome].filter(Boolean).join(" ").trim() || p.name;
+};
+const age = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ""); if (!m) return "";
+  const n = new Date(); let a = n.getFullYear() - +m[1];
+  if (n.getMonth() + 1 < +m[2] || (n.getMonth() + 1 === +m[2] && n.getDate() < +m[3])) a--;
+  return a >= 0 && a < 130 ? `${a} anni` : "";
+};
+
+function cardAnagrafica(p) {
+  const box = h("div", { class: "card" }, h("h4", {}, "Dati anagrafici"), h("div", { class: "spinner" }));
+  const show = (meta) => {
+    const a = meta.anagrafica;
+    const has = ANAG_FIELDS.some(([k]) => a[k]);
+    const rows = ANAG_FIELDS.filter(([k]) => a[k]).map(([k, l, t]) => h("div", { class: "kv" }, h("span", { class: "k" }, l), h("span", {}, t === "date" ? itDate(a[k]) + (age(a[k]) ? ` (${age(a[k])})` : "") : a[k])));
+    box.replaceChildren(h("h4", {}, "Dati anagrafici"),
+      has ? h("div", { class: "kvs" }, rows) : h("p", { class: "muted small" }, "Nessun dato inserito. Se li inserisci compariranno nei documenti che scrivi per questo paziente."),
+      h("button", { class: "btn small", onclick: () => edit(meta) }, has ? "Modifica" : "Inserisci dati"));
+  };
+  const edit = (meta) => {
+    const a = { ...meta.anagrafica };
+    const inputs = ANAG_FIELDS.map(([k, l, t]) => k === "sesso"
+      ? h("label", {}, l, h("select", { onchange: (e) => (a[k] = e.target.value) }, [["", "—"], ["M", "Maschio"], ["F", "Femmina"]].map(([v, tx]) => h("option", { value: v, selected: a[k] === v }, tx))))
+      : h("label", {}, l, h("input", { type: t || "text", value: a[k] || "", autocomplete: "off", oninput: (e) => (a[k] = e.target.value) })));
+    box.replaceChildren(h("h4", {}, "Dati anagrafici"), h("div", { class: "grid2" }, inputs),
+      h("div", { class: "btnrow" },
+        h("button", { class: "btn", onclick: () => show(meta) }, "Annulla"),
+        h("button", { class: "btn primary", onclick: async () => {
+          const done = busy("Salvo…");
+          try { meta.anagrafica = a; await saveMeta(p, meta); toast("Dati salvati"); } catch (e) { toast("Errore: " + e.message, true); }
+          done(); show(meta);
+        } }, "Salva")));
+  };
+  loadMeta(p).then(show);
+  return box;
+}
+
+function cardNote(p) {
+  const box = h("div", { class: "card note" }, h("h4", {}, "🔒 Note private"), h("div", { class: "spinner" }));
+  loadMeta(p).then(async (meta) => {
+    let text = "", saved = "";
+    if (meta.id) { try { const j = await S.drive.readJson(notePath(meta.id)); text = (j && j.text) || ""; } catch (e) { console.warn("note", e); } }
+    saved = text;
+    const st = h("span", { class: "muted small" }, "");
+    const ta = h("textarea", { rows: 6, placeholder: "Appunti riservati su questo paziente…", value: text, oninput: (e) => { text = e.target.value; st.textContent = text === saved ? "" : "modifiche non salvate"; } });
+    box.replaceChildren(h("h4", {}, "🔒 Note private"), ta,
+      h("p", { class: "muted small" }, "Solo per te: non compaiono mai nei documenti e non stanno nella cartella del paziente (sono in “_Gestionale/note”)."),
+      h("div", { class: "btnrow wrap" }, h("button", { class: "btn small primary", onclick: async () => {
+        try {
+          if (!meta.id) await saveMeta(p, meta);
+          await S.drive.writeJson(notePath(meta.id), { text, updated: new Date().toISOString() });
+          saved = text; st.textContent = "salvate ✓";
+        } catch (e) { toast("Errore: " + e.message, true); }
+      } }, "Salva note"), st));
+  });
+  return box;
+}
+
+// ---------- referto BMC ----------
+const BMC_FIELDS = [
+  ["numero", "Numero incarico", "text"], ["paziente", "Paz.", "text"], ["nascita", "Data di nascita", "date"],
+  ["dataVisita", "Data visita", "date"], ["luogoVisita", "Luogo visita", "text"], ["medico", "Medico incaricato", "text"],
+];
+function viewBmcDoc(key) {
+  const p = patientByKey(key);
+  if (!p) return h("section", { class: "card" }, h("p", {}, "Paziente non trovato."));
+  const d = { ...EMPTY_BMC_DOC(), paziente: p.name, consensoNome: p.name, medico: S.bmc.medico || S.st.profile.nome || "", luogoVisita: S.bmc.luogo || "", conFirma: !!(S.st.profile.firmaData || S.st.profile.timbroData) };
+  const prev = h("div", { class: "preview" });
+  const upd = () => { prev.innerHTML = bmcHtml(d, S.bmc, S.st.profile, esc); };
+  const el = {};
+  const inp = (k, label, type = "text") => (el[k] = h("input", { type, value: d[k], autocomplete: "off", oninput: (e) => { d[k] = e.target.value; if (k === "paziente" && d.consensoNome === prevName) { d.consensoNome = d.paziente; el.consensoNome.value = d.paziente; } if (k === "paziente") prevName = d.paziente; upd(); } }));
+  let prevName = d.paziente;
+  const area = (k, rows = 3) => (el[k] = h("textarea", { rows, value: d[k], oninput: (e) => { d[k] = e.target.value; upd(); } }));
+  const small = (k, ph) => (el[k] = h("input", { value: d[k], placeholder: ph, inputmode: "decimal", oninput: (e) => { d[k] = e.target.value; upd(); } }));
+  const L = (t, node) => h("label", {}, t, node);
+
+  const form = h("div", { class: "card" },
+    h("h2", {}, "Medical report BMCh24"), h("p", { class: "muted" }, "Paziente: " + p.name),
+    h("div", { class: "grid2" }, L("Numero incarico", inp("numero")), L("Paz.", inp("paziente"))),
+    h("div", { class: "grid2" }, L("Data di nascita", inp("nascita", "", "date")), L("Medico incaricato", inp("medico"))),
+    h("div", { class: "grid2" }, L("Data visita", inp("dataVisita", "", "date")), L("Luogo visita", inp("luogoVisita"))),
+    L("Motivo della chiamata", area("motivo", 3)), L("Anamnesi/Allergie", area("anamnesi", 5)),
+    h("h4", {}, "Parametri vitali all'ingresso"),
+    h("div", { class: "grid4" }, L("P.A. max", small("pa1", "120")), L("P.A. min (mmHg)", small("pa2", "80")), L("F.C. (/min)", small("fc", "72")), L("T° (°C)", small("temp", "36.5")), L("SpO2 (%)", small("spo2", "98"))),
+    h("h4", {}, "Esame obiettivo"),
+    L("Torace", area("torace", 2)), L("Addome", area("addome", 2)), L("Arti inferiori", area("arti", 2)), L("Altro", area("altro", 2)),
+    L("DIAGNOSI", area("diagnosi", 4)), L("PROGNOSI", area("prognosi", 3)), L("Conclusione / TERAPIA", area("terapia", 6)),
+    L("Note aggiuntive (facoltativo, es. traduzione)", area("extra", 4)),
+    h("h4", {}, "Consenso e firme"),
+    h("div", { class: "grid2" }, L("Paziente (cognome e nome) nel consenso", inp("consensoNome")), L("Firma del paziente — precisazione (facoltativa, es. familiare)", inp("firmaNote"))),
+    h("label", { class: "check" }, h("input", { type: "checkbox", checked: d.conFirma, onchange: (e) => { d.conFirma = e.target.checked; upd(); } }), " Inserisci la mia firma e il mio timbro"),
+    S.bmc.logoData ? null : h("a", { class: "banner", href: "#/impostazioni" }, "⚠︎ Logo BMCh24 non impostato › "));
+
+  const make = async () => {
+    const done = busy("Creo il documento…");
+    try { const b = await buildBmcDocx(d, S.bmc, S.st.profile); done(); return b; } catch (e) { done(); console.error(e); toast("Errore nella creazione: " + e.message, true); return null; }
+  };
+  const buttons = h("div", { class: "btnrow wrap" },
+    h("a", { class: "btn", href: "#/p/" + encodeURIComponent(p.path) }, "Annulla"),
+    h("button", { class: "btn", onclick: () => { if (!printHtml(bmcHtml(d, S.bmc, S.st.profile, esc), "Medical report")) toast("Il browser ha bloccato la finestra: consenti i popup", true); } }, "🖨 Stampa / PDF"),
+    h("button", { class: "btn", onclick: async () => { const b = await make(); if (b) saveBlob(b, bmcFileName(d)); } }, "⬇︎ Scarica Word"),
+    h("button", { class: "btn primary", onclick: async () => {
+      const b = await make(); if (!b) return;
+      const done = busy("Salvo nella cartella del paziente…");
+      try { await S.drive.upload(p.path, bmcFileName(d), b); toast("Referto salvato"); }
+      catch (e) { done(); return toast("Errore nel salvataggio: " + e.message, true); }
+      done(); await refresh(true); location.hash = "#/p/" + encodeURIComponent(p.path);
+    } }, "Salva su OneDrive"));
+  form.append(buttons);
+  upd();
+
+  // Dati anagrafici del paziente (se inseriti) precompilano il modulo
+  loadMeta(p).then((meta) => {
+    const a = meta.anagrafica, full = patientFullName(p, meta);
+    if (full !== d.paziente) { d.paziente = full; el.paziente.value = full; if (d.consensoNome === prevName) { d.consensoNome = full; el.consensoNome.value = full; } prevName = full; }
+    if (a.nascita && !d.nascita) { d.nascita = a.nascita; el.nascita.value = a.nascita; }
+    upd();
+  });
+  return h("section", {}, form, h("div", { class: "card" }, h("h4", {}, "Anteprima"), prev));
+}
+
+// ---------- impostazioni BMC ----------
+function cardBmcSettings() {
+  const B = { ...S.bmc };
+  const box = h("div", { class: "imgbox" });
+  const btns = h("div", { class: "btnrow wrap" });
+  const show = () => {
+    box.replaceChildren(B.logoData ? h("img", { src: B.logoData, alt: "logo BMC" }) : h("span", { class: "muted small" }, "nessun logo"));
+    btns.replaceChildren(fileInp, h("button", { class: "btn small", onclick: () => fileInp.click() }, B.logoData ? "Sostituisci logo" : "Carica logo"));
+  };
+  const fileInp = h("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
+    if (!fileInp.files[0]) return;
+    try { B.logoData = await toPngDataUrl(fileInp.files[0], 1000, false); show(); } catch (e) { toast(e.message, true); }
+  } });
+  show();
+  const t = (k, label) => h("label", {}, label, h("input", { value: B[k] || "", oninput: (e) => (B[k] = e.target.value) }));
+  return h("div", { class: "card" }, h("h4", {}, "Cliente BMCh24"),
+    box, btns,
+    h("div", { class: "grid2" }, t("titolo", "Titolo del referto"), t("direzione", "Direzione sanitaria")),
+    h("div", { class: "grid2" }, t("medico", "Medico incaricato (predefinito)"), t("luogo", "Luogo visita (predefinito)")),
+    h("div", { class: "btnrow" }, h("button", { class: "btn primary", onclick: async () => {
+      const done = busy("Salvo…");
+      try { S.bmc = { ...DEFAULT_BMC, ...B }; await S.drive.writeJson(bmcPath(), S.bmc); toast("Impostazioni BMC salvate"); } catch (e) { toast("Errore: " + e.message, true); }
+      done();
+    } }, "Salva")));
+}
+
+async function loadBmc() {
+  try { const j = await S.drive.readJson(bmcPath()); if (j) S.bmc = { ...DEFAULT_BMC, ...j }; } catch (e) { console.warn("bmc", e); }
+}
+
 // ---------- avvio ----------
 function showFatal(e) {
   $("#app").replaceChildren(h("div", { class: "center" }, h("div", { class: "card" },
@@ -511,13 +722,14 @@ async function startWith(drive) {
   buildShell();
   const done = busy("Avvio…");
   await loadSettings();
+  await loadBmc();
   done();
   await refresh();
 }
 
 async function boot() {
   const demo = new URLSearchParams(location.search).has("demo");
-  if (demo) return startWith(new DemoDrive(CONFIG.rootPath));
+  if (demo) return startWith(new DemoDrive(CONFIG.rootPath, CONFIG.bmcPath));
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) navigator.serviceWorker.register("sw.js").catch(() => {});
   let a;
   try { a = await initAuth(); } catch (e) { return showFatal(e); }

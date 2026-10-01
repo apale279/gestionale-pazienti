@@ -7,6 +7,9 @@ export const CONFIG = {
   // Percorso della cartella pazienti DENTRO OneDrive (senza "OneDrive/" davanti).
   rootPath: "Lavoro_medico/Pazienti",
 
+  // Cartella dei pazienti del cliente BMCh24 (una sottocartella per paziente).
+  bmcPath: "Lavoro_medico/BMC",
+
   // Cartella (dentro rootPath) dove l'app salva le proprie impostazioni.
   appFolder: "_Gestionale",
 

@@ -77,7 +77,7 @@ export async function scan(drive, cfg, onProgress = () => {}) {
     for (const x of items) {
       if (x.isFolder) {
         if (depth < 4 && !/^[.]/.test(x.name)) out.push(...await collect(x.path, join(sub, x.name), depth + 1));
-      } else {
+      } else if (x.name !== ".paziente.json") {
         out.push({ ...x, sub, date: fileDate(x.name, x.modified) });
       }
     }
@@ -95,7 +95,7 @@ export async function scan(drive, cfg, onProgress = () => {}) {
   for (const r of results) {
     const k = norm(r.name);
     const ex = byKey.get(k);
-    if (!ex) byKey.set(k, { name: r.name, path: r.path, folders: [r.path], files: r.files });
+    if (!ex) byKey.set(k, { name: r.name, path: r.path, folders: [r.path], files: r.files, group: "" });
     else { ex.folders.push(r.path); ex.files.push(...r.files); if (r.container === "") { ex.path = r.path; ex.name = r.name; } }
   }
   const patients = [...byKey.values()].map((p) => {
@@ -104,6 +104,20 @@ export async function scan(drive, cfg, onProgress = () => {}) {
     return p;
   }).sort((a, b) => a.name.localeCompare(b.name, "it"));
 
+  // Pazienti BMC: una sottocartella per paziente dentro la cartella BMC (i file sciolti, es. contratti, si ignorano)
+  let bmc = [];
+  if (cfg.bmcPath) {
+    try {
+      const folders = (await drive.list(cfg.bmcPath)).filter((x) => x.isFolder && !/^[._]/.test(x.name) && !hidden.has(x.name.toLowerCase()));
+      bmc = await pMap(folders, 6, async (f) => {
+        const files = await collect(f.path, "", 0);
+        files.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        return { name: f.name, path: f.path, folders: [f.path], files, group: "BMC", lastDate: files.length ? files[0].date : "" };
+      });
+      bmc.sort((a, b) => a.name.localeCompare(b.name, "it"));
+    } catch (e) { if (e.status !== 404) throw e; }
+  }
+
   // Classifica i file sciolti: modelli (carta intestata, template…) oppure candidati ai pazienti
   const models = [], candidates = [];
   for (const f of loose) {
@@ -111,7 +125,7 @@ export async function scan(drive, cfg, onProgress = () => {}) {
     if (looksModel && !matchPatient(f.name, patients)) models.push(f);
     else candidates.push(f);
   }
-  return { patients, models, loose: candidates };
+  return { patients, bmc, models, loose: candidates };
 }
 
 // ---------------------------------------------------------------------------
