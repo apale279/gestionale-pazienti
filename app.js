@@ -2,7 +2,7 @@ import { CONFIG } from "./config.js";
 import { initAuth, login, logout, getClientId, saveClientId } from "./auth.js";
 import { GraphDrive, DemoDrive } from "./drive.js";
 import { scan, buildPlan, applyPlan, sanitizeName, extOf, stripExt } from "./indexer.js";
-import { buildDocx, docFileName, previewHtml, itDate, todayISO, EMPTY_PROFILE } from "./docgen.js";
+import { buildDocx, docFileName, previewHtml, itDate, todayISO, EMPTY_PROFILE, DEFAULT_LAYOUT, FONTS, mergeLayout } from "./docgen.js";
 
 // ---------- utilità ----------
 const join = (...p) => p.filter(Boolean).join("/");
@@ -44,7 +44,7 @@ const icon = (n) => ({ pdf: "📕", docx: "📝", doc: "📝", dotx: "📋", xls
 const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
 
 // ---------- stato ----------
-const S = { drive: null, st: { profile: { ...EMPTY_PROFILE }, hiddenFolders: [] }, sc: null, q: "", account: "" };
+const S = { drive: null, st: { profile: { ...EMPTY_PROFILE }, layout: mergeLayout(), hiddenFolders: [] }, sc: null, q: "", account: "" };
 const settingsPath = () => join(CONFIG.rootPath, CONFIG.appFolder, "impostazioni.json");
 const scanCfg = () => ({ ...CONFIG, hiddenFolders: S.st.hiddenFolders });
 const patientByName = (n) => S.sc && S.sc.patients.find((p) => p.name === n);
@@ -52,7 +52,7 @@ const patientByName = (n) => S.sc && S.sc.patients.find((p) => p.name === n);
 async function loadSettings() {
   try {
     const j = await S.drive.readJson(settingsPath());
-    if (j) S.st = { profile: { ...EMPTY_PROFILE, ...(j.profile || {}) }, hiddenFolders: j.hiddenFolders || [] };
+    if (j) S.st = { profile: { ...EMPTY_PROFILE, ...(j.profile || {}) }, layout: mergeLayout(j.layout), hiddenFolders: j.hiddenFolders || [] };
   } catch (e) { console.warn("impostazioni", e); }
 }
 const saveSettings = () => S.drive.writeJson(settingsPath(), S.st);
@@ -77,6 +77,7 @@ function buildShell() {
       h("a", { class: "brand", href: "#/" }, "Pazienti"),
       h("span", { class: "spacer" }),
       h("button", { class: "iconbtn", title: "Aggiorna", onclick: () => refresh() }, "⟳"),
+      h("a", { class: "iconbtn", title: "Layout referti", href: "#/layout" }, "✎"),
       h("a", { class: "iconbtn", title: "Impostazioni", href: "#/impostazioni" }, "⚙︎")),
     S.drive.isDemo ? h("div", { class: "demo" }, "Modalità demo: dati inventati, nulla viene salvato su OneDrive. ", h("a", { href: location.pathname }, "Esci dalla demo")) : null,
     h("div", { class: "cols" }, h("aside", { id: "list" }), h("main", { id: "detail" })));
@@ -98,6 +99,7 @@ function render() {
   else if (r.name === "nuovo") d.append(viewNewDoc(r.arg));
   else if (r.name === "riordina") d.append(viewReorder());
   else if (r.name === "impostazioni") d.append(viewSettings());
+  else if (r.name === "layout") d.append(viewLayout());
   else if (r.name === "paziente") d.append(viewNewPatient());
   else d.append(viewHome());
   window.scrollTo(0, 0);
@@ -266,7 +268,7 @@ function viewNewDoc(name) {
   const d = { tipo: CONFIG.docTypes[0], data: todayISO(), titolo: "", testo: TEXTS[CONFIG.docTypes[0]] || "", paziente: p.name };
   let tpl = d.testo;
   const prev = h("div", { class: "preview" });
-  const upd = () => { prev.innerHTML = previewHtml(S.st.profile, d, esc); };
+  const upd = () => { prev.innerHTML = previewHtml(S.st.profile, d, esc, S.st.layout); };
   const tipo = h("select", { onchange: (e) => { d.tipo = e.target.value; if (d.testo === tpl || !d.testo.trim()) { tpl = TEXTS[d.tipo] || ""; d.testo = tpl; ta.value = tpl; } upd(); } },
     CONFIG.docTypes.map((t) => h("option", { value: t }, t)));
   const data = h("input", { type: "date", value: d.data, oninput: (e) => { d.data = e.target.value; upd(); } });
@@ -276,12 +278,12 @@ function viewNewDoc(name) {
   const noProfile = !S.st.profile.nome;
   const make = async () => {
     const done = busy("Creo il documento…");
-    try { const blob = await buildDocx(S.st.profile, d); done(); return blob; } catch (e) { done(); console.error(e); toast("Errore nella creazione: " + e.message, true); return null; }
+    try { const blob = await buildDocx(S.st.profile, d, S.st.layout); done(); return blob; } catch (e) { done(); console.error(e); toast("Errore nella creazione: " + e.message, true); return null; }
   };
   return h("section", {},
     h("div", { class: "card" },
       h("h2", {}, "Nuovo documento"), h("p", { class: "muted" }, "Paziente: " + p.name),
-      noProfile ? h("a", { class: "banner", href: "#/impostazioni" }, "⚠︎ Intestazione, firma e timbro non ancora impostati › ") : null,
+      noProfile ? h("a", { class: "banner", href: "#/layout" }, "⚠︎ Intestazione, firma e timbro non ancora impostati › ") : h("a", { class: "small", href: "#/layout" }, "✎ Modifica layout"),
       h("div", { class: "grid2" }, h("label", {}, "Tipo", tipo), h("label", {}, "Data", data)),
       h("label", {}, "Titolo", tit), h("label", {}, "Testo", ta),
       h("div", { class: "btnrow wrap" },
@@ -367,43 +369,113 @@ function toPngDataUrl(file, maxW, removeWhite) {
 }
 
 function viewSettings() {
-  const P = { ...S.st.profile };
-  const field = (k, label, ph, tag = "input") => h("label", {}, label, h(tag, { value: P[k], placeholder: ph || "", oninput: (e) => (P[k] = e.target.value) }));
-  const imgBox = (k, label, maxW) => {
-    const box = h("div", { class: "imgbox" });
-    const show = () => box.replaceChildren(P[k] ? h("img", { src: P[k], alt: label }) : h("span", { class: "muted small" }, "nessuna immagine"));
-    show();
-    const inp = h("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
-      if (!inp.files[0]) return;
-      try { P[k] = await toPngDataUrl(inp.files[0], maxW, true); show(); } catch (e) { toast(e.message, true); }
-    } });
-    return h("div", { class: "card inner" }, h("h4", {}, label), box,
-      h("div", { class: "btnrow wrap" }, inp,
-        h("button", { class: "btn small", onclick: () => inp.click() }, "Carica foto / immagine"),
-        P[k] ? h("button", { class: "btn small", onclick: () => { P[k] = ""; show(); } }, "Rimuovi") : null),
-      h("p", { class: "muted small" }, "Meglio una firma o un timbro su foglio bianco: lo sfondo bianco viene reso trasparente."));
-  };
   const hiddenList = S.st.hiddenFolders.length ? h("ul", { class: "files" }, S.st.hiddenFolders.map((n) =>
     h("li", { class: "plain" }, n, " ", h("button", { class: "btn small", onclick: async () => { S.st.hiddenFolders = S.st.hiddenFolders.filter((x) => x !== n); await saveSettings(); await refresh(true); } }, "Ripristina")))) : h("p", { class: "muted small" }, "Nessuna.");
   return h("section", {},
-    h("div", { class: "card" },
-      h("h2", {}, "Intestazione dei documenti"),
-      h("div", { class: "grid2" }, field("nome", "Nome e cognome", "Dott. Mario Rossi"), field("qualifica", "Qualifica", "Medico Chirurgo – Specialista in …")),
-      field("indirizzo", "Indirizzo", "Via … , Città"),
-      h("div", { class: "grid2" }, field("telefono", "Telefono"), field("email", "Email")),
-      field("extra", "Albo / P.IVA / altro", "Iscr. Albo n. …  ·  P.IVA …"),
-      h("div", { class: "grid2" }, field("luogo", "Luogo (accanto alla data)", "Milano"), field("piede", "Nota a piè di pagina")),
-      imgBox("firmaData", "Firma", 500), imgBox("timbroData", "Timbro", 500),
-      h("div", { class: "btnrow" }, h("button", { class: "btn primary", onclick: async () => {
-        const done = busy("Salvo…");
-        S.st.profile = P;
-        try { await saveSettings(); toast("Impostazioni salvate"); } catch (e) { toast("Errore: " + e.message, true); }
-        done();
-      } }, "Salva"))),
+    h("div", { class: "card" }, h("h2", {}, "Impostazioni"),
+      h("p", { class: "muted" }, "Intestazione, firma, timbro e aspetto dei documenti si modificano nell'editor di layout."),
+      h("a", { class: "btn primary", href: "#/layout" }, "✎ Layout referti")),
     h("div", { class: "card" }, h("h4", {}, "Cartelle nascoste dall'elenco"), hiddenList),
     h("div", { class: "card" }, h("h4", {}, "Account"),
       h("p", { class: "muted small" }, S.drive.isDemo ? "Modalità demo" : `Collegato a OneDrive${S.account ? " come " + S.account : ""}. Cartella: ${CONFIG.rootPath}`),
       S.drive.isDemo ? null : h("button", { class: "btn", onclick: () => logout() }, "Esci")));
+}
+
+// ---------- editor di layout ----------
+function viewLayout() {
+  const P = { ...S.st.profile };
+  const L = mergeLayout(S.st.layout);
+  const sample = { tipo: "Visita", data: todayISO(), titolo: "", paziente: "Mario Rossi (esempio)",
+    testo: "Motivo della visita:\nControllo periodico.\n\nEsame obiettivo:\nNella norma.\n\nConclusioni e terapia:\nSi consiglia controllo tra sei mesi." };
+  const prev = h("div", { class: "preview" });
+  const upd = () => { prev.innerHTML = previewHtml(P, sample, esc, L); };
+
+  const text = (k, label, ph) => h("label", {}, label, h("input", { value: P[k], placeholder: ph || "", oninput: (e) => { P[k] = e.target.value; upd(); } }));
+  const sel = (key, label, opts, num) => h("label", {}, label,
+    h("select", { onchange: (e) => { L[key] = num ? Number(e.target.value) : e.target.value; upd(); } },
+      opts.map(([v, t]) => h("option", { value: v, selected: String(L[key]) === String(v) }, t))));
+  const range = (key, label, min, max, unit = "") => {
+    const out = h("span", { class: "rv" }, L[key] + unit);
+    return h("label", {}, h("span", { class: "rl" }, label, out),
+      h("input", { type: "range", min, max, step: 1, value: L[key], oninput: (e) => { L[key] = Number(e.target.value); out.textContent = L[key] + unit; upd(); } }));
+  };
+  const check = (label, get, set) => h("label", { class: "check" }, h("input", { type: "checkbox", checked: get(), onchange: (e) => { set(e.target.checked); upd(); } }), label);
+
+  const imgBox = (k, label, hint) => {
+    const box = h("div", { class: "imgbox" });
+    const btns = h("div", { class: "btnrow wrap" });
+    const show = () => {
+      box.replaceChildren(P[k] ? h("img", { src: P[k], alt: label }) : h("span", { class: "muted small" }, "nessuna immagine"));
+      btns.replaceChildren(inp, h("button", { class: "btn small", onclick: () => inp.click() }, P[k] ? "Sostituisci" : "Carica foto / immagine"),
+        P[k] ? h("button", { class: "btn small", onclick: () => { P[k] = ""; show(); upd(); } }, "Rimuovi") : null);
+    };
+    const inp = h("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
+      if (!inp.files[0]) return;
+      try { P[k] = await toPngDataUrl(inp.files[0], 600, k !== "logoData"); show(); upd(); } catch (e) { toast(e.message, true); }
+    } });
+    show();
+    return h("div", { class: "card inner" }, h("h4", {}, label), box, btns, h("p", { class: "muted small" }, hint));
+  };
+
+  const save = async () => {
+    const done = busy("Salvo…");
+    S.st.profile = { ...P }; S.st.layout = mergeLayout(L);
+    try { await saveSettings(); toast("Layout salvato"); } catch (e) { toast("Errore: " + e.message, true); }
+    done();
+  };
+  const reset = () => { S.st.layout = mergeLayout(); S.st.profile = { ...P }; render(); toast("Layout ripristinato (non ancora salvato)"); };
+  const sampleDoc = async () => {
+    const done = busy("Creo l'esempio…");
+    try { saveBlob(await buildDocx(P, sample, L), "Esempio layout.docx"); } catch (e) { console.error(e); toast("Errore: " + e.message, true); }
+    done();
+  };
+
+  const controls = h("div", { class: "designer-controls" },
+    h("div", { class: "card" }, h("h3", {}, "I tuoi dati (intestazione)"),
+      h("div", { class: "grid2" }, text("nome", "Nome e cognome", "Dott. Mario Rossi"), text("qualifica", "Qualifica", "Medico Chirurgo – Specialista in …")),
+      text("indirizzo", "Indirizzo", "Via … , Città"),
+      h("div", { class: "grid2" }, text("telefono", "Telefono"), text("email", "Email")),
+      text("extra", "Albo / P.IVA / altro", "Iscr. Albo n. …  ·  P.IVA …"),
+      h("div", { class: "grid2" }, text("luogo", "Luogo (accanto alla data)", "Milano"), text("piede", "Nota a piè di pagina"))),
+    h("div", { class: "card" }, h("h3", {}, "Logo, firma e timbro"),
+      imgBox("logoData", "Logo (facoltativo)", "Immagine con il tuo logo; resta com'è, senza togliere lo sfondo."),
+      imgBox("firmaData", "Firma", "Meglio su foglio bianco: lo sfondo bianco diventa trasparente."),
+      imgBox("timbroData", "Timbro", "Meglio su foglio bianco: lo sfondo bianco diventa trasparente.")),
+    h("div", { class: "card" }, h("h3", {}, "Intestazione"),
+      h("div", { class: "grid2" },
+        sel("hAlign", "Posizione del testo", [["left", "In alto a sinistra"], ["center", "Al centro"], ["right", "In alto a destra"]]),
+        sel("logoPos", "Logo", [["none", "Nessuno"], ["sopra", "Sopra il testo"], ["sinistra", "A sinistra"], ["destra", "A destra"]])),
+      range("logoW", "Dimensione logo", 40, 200, " px"),
+      sel("contactMode", "Recapiti", [["inline", "Su una sola riga"], ["lines", "Una riga ciascuno"]]),
+      h("div", { class: "checks" },
+        check("Qualifica", () => L.show.qualifica, (v) => (L.show.qualifica = v)),
+        check("Indirizzo", () => L.show.indirizzo, (v) => (L.show.indirizzo = v)),
+        check("Telefono", () => L.show.telefono, (v) => (L.show.telefono = v)),
+        check("Email", () => L.show.email, (v) => (L.show.email = v)),
+        check("Albo / P.IVA", () => L.show.extra, (v) => (L.show.extra = v)),
+        check("Linea sotto l'intestazione", () => L.line, (v) => (L.line = v))),
+      h("label", {}, "Colore della linea", h("input", { type: "color", value: L.lineColor, oninput: (e) => { L.lineColor = e.target.value; upd(); } })),
+      range("nameSize", "Nome (pt)", 10, 28), range("subSize", "Qualifica (pt)", 8, 18), range("infoSize", "Recapiti (pt)", 7, 14)),
+    h("div", { class: "card" }, h("h3", {}, "Pagina e testo"),
+      h("div", { class: "grid2" }, sel("font", "Carattere", FONTS.map((f) => [f, f])), sel("margin", "Margini", [["narrow", "Stretti"], ["normal", "Normali"], ["wide", "Ampi"]])),
+      range("bodySize", "Testo (pt)", 9, 14),
+      h("div", { class: "grid2" }, sel("titleAlign", "Titolo", [["center", "Centrato"], ["left", "A sinistra"]]),
+        h("div", {}, check("Testo giustificato", () => L.justify, (v) => (L.justify = v))))),
+    h("div", { class: "card" }, h("h3", {}, "Firma e timbro"),
+      h("div", { class: "grid2" },
+        sel("sigAlign", "Luogo, data e firma", [["right", "A destra"], ["center", "Al centro"], ["left", "A sinistra"]]),
+        sel("stampSide", "Con firma e timbro insieme", [["left", "Timbro a sinistra, firma a destra"], ["right", "Firma a sinistra, timbro a destra"]])),
+      range("sigW", "Larghezza firma", 80, 300, " px"), range("stampW", "Larghezza timbro", 80, 300, " px")));
+
+  upd();
+  return h("section", {},
+    h("div", { class: "card" }, h("h2", {}, "Layout referti"),
+      h("p", { class: "muted" }, "Imposta i tuoi dati e l'aspetto: l'anteprima si aggiorna mentre modifichi. Il layout vale per tutti i nuovi documenti."),
+      h("div", { class: "btnrow wrap" },
+        h("button", { class: "btn primary", onclick: save }, "Salva layout"),
+        h("button", { class: "btn", onclick: sampleDoc }, "⬇︎ Scarica esempio Word"),
+        h("button", { class: "btn", onclick: reset }, "Ripristina predefiniti"))),
+    h("div", { class: "designer" }, controls, h("div", { class: "designer-preview" }, h("div", { class: "card" }, h("h4", {}, "Anteprima"), prev))));
 }
 
 // ---------- avvio ----------

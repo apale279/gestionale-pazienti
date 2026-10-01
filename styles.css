@@ -78,6 +78,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .imgbox { min-height: 70px; display: flex; align-items: center; justify-content: center; background: #fff; border: 1px dashed var(--line); border-radius: 10px; padding: 8px; }
 .imgbox img { max-height: 100px; max-width: 100%; }
 
+.designer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.designer-preview { position: sticky; top: 76px; }
+.designer-controls h3 { font-size: 16px; }
+.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.rl { display: flex; justify-content: space-between; } .rv { color: var(--text); font-weight: 600; }
+input[type=range] { padding: 0; height: 28px; }
+input[type=color] { height: 44px; padding: 4px; }
+
 .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .login { max-width: 460px; width: 100%; }
 .overlay { position: fixed; inset: 0; z-index: 50; background: rgba(10,16,22,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -96,5 +104,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   body[data-view="detail"] .back { display: inline-flex; }
   body[data-view="detail"] .brand { display: none; }
   .grid2, .rrow { grid-template-columns: 1fr; }
+  .designer { grid-template-columns: 1fr; }
+  .designer-preview { position: static; order: -1; }
   #detail { padding: 12px; }
 }
