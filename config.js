@@ -2,7 +2,7 @@
 export const CONFIG = {
   // "Application (client) ID" ottenuto registrando l'app su Microsoft (vedi GUIDA.md).
   // Se lasci vuoto, l'app te lo chiede al primo avvio.
-  clientId: "",
+  clientId: "607cc1c1-3d7a-4165-9e4b-40fba2019238",
 
   // Percorso della cartella pazienti DENTRO OneDrive (senza "OneDrive/" davanti).
   rootPath: "Lavoro_medico/Pazienti",

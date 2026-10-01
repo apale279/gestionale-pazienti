@@ -1,5 +1,5 @@
 // Service worker: tiene in cache solo i file dell'app (mai i dati dei pazienti).
-const CACHE = "gp-shell-v1";
+const CACHE = "gp-shell-v2";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "auth.js", "drive.js", "indexer.js", "docgen.js", "config.js",
   "vendor/msal-browser.min.js", "vendor/docx.umd.js", "manifest.webmanifest"];
 
