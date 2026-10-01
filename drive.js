@@ -16,6 +16,7 @@ function toItem(parentPath, x) {
     size: x.size || 0,
     modified: x.lastModifiedDateTime || "",
     webUrl: x.webUrl || "",
+    driveId: (x.parentReference && x.parentReference.driveId) || "",
     path: join(parentPath, x.name),
   };
 }
@@ -51,7 +52,7 @@ export class GraphDrive {
 
   async list(path) {
     const out = [];
-    let url = `${this.ref(path)}/children?$top=200&$select=id,name,size,folder,file,webUrl,lastModifiedDateTime`;
+    let url = `${this.ref(path)}/children?$top=200&$select=id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference`;
     while (url) {
       const j = await this.json(url);
       for (const x of j.value) out.push(toItem(path, x));
@@ -62,7 +63,7 @@ export class GraphDrive {
 
   async stat(path) {
     try {
-      const x = await this.json(`${this.ref(path)}?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime`);
+      const x = await this.json(`${this.ref(path)}?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference`);
       return toItem(path.split("/").slice(0, -1).join("/"), x);
     } catch (e) { if (e.status === 404) return null; throw e; }
   }
@@ -151,6 +152,13 @@ export class GraphDrive {
     const name = parts.pop();
     await this.ensureFolder(parts.join("/"));
     return this.upload(parts.join("/"), name, new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" }), "replace");
+  }
+
+  // Contenuto del file come Blob (per mostrarlo nel browser invece di scaricarlo)
+  async blob(path) {
+    const res = await this.api(`${this.ref(path)}/content`);
+    if (!res.ok) throw new Error("Lettura fallita: " + res.status);
+    return res.blob();
   }
 
   async downloadUrl(path) {
@@ -254,6 +262,11 @@ export class DemoDrive {
     const parts = path.split("/");
     const name = parts.pop();
     return this.upload(parts.join("/"), name, new Blob([JSON.stringify(obj)], { type: "application/json" }), "replace");
+  }
+  async blob(path) {
+    const n = this.nodes.get(path);
+    return n.blob || new Blob([`Documento di prova (demo)
+${path}`], { type: "text/plain" });
   }
   async downloadUrl(path) {
     const n = this.nodes.get(path);

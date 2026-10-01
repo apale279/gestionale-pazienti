@@ -144,12 +144,31 @@ function viewHome() {
 }
 
 // ---------- scheda paziente ----------
-async function openFile(path) {
+const VIEW_MIME = { pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", txt: "text/plain" };
+// PDF e immagini: si aprono nel visualizzatore del browser. Word/Excel: nel visualizzatore online di OneDrive.
+async function openFile(f) {
   const w = window.open("", "_blank");
+  const go = (url) => { if (w) w.location = url; else location.href = url; };
   try {
-    const url = await S.drive.downloadUrl(path);
-    if (w) w.location = url; else location.href = url;
+    const type = VIEW_MIME[extOf(f.name)];
+    if (type) go(URL.createObjectURL(new Blob([await S.drive.blob(f.path)], { type })));
+    else if (f.webUrl) go(f.webUrl);
+    else go(await S.drive.downloadUrl(f.path));
   } catch (e) { if (w) w.close(); toast("Impossibile aprire il file: " + e.message, true); }
+}
+// Apre il file nell'app desktop (Word/Excel) partendo dalla copia su OneDrive. Sperimentale.
+function appLink(f) {
+  const scheme = { docx: "ms-word", doc: "ms-word", dotx: "ms-word", xlsx: "ms-excel", xls: "ms-excel" }[extOf(f.name)];
+  if (!scheme || !f.driveId || S.drive.isDemo) return null;
+  return { label: scheme === "ms-word" ? "Word" : "Excel", href: `${scheme}:ofe|u|https://d.docs.live.net/${f.driveId.toLowerCase()}/${f.path.split("/").map(encodeURIComponent).join("/")}` };
+}
+function fileRow(f, withMeta = true) {
+  const ap = appLink(f);
+  return h("li", { class: "frow" },
+    h("button", { class: "file", onclick: () => openFile(f) },
+      h("span", { class: "ficon" }, icon(f.name)),
+      h("span", { class: "fbody" }, h("span", { class: "fname" }, f.name), withMeta ? h("span", { class: "fmeta" }, [f.date ? itDate(f.date) : "", fmtSize(f.size)].filter(Boolean).join(" · ")) : null)),
+    ap ? h("a", { class: "btn small appbtn", href: ap.href, title: "Apri nell'app " + ap.label + " (sperimentale)" }, ap.label) : null);
 }
 async function openFolderOnline(path) {
   const w = window.open("", "_blank");
@@ -181,10 +200,7 @@ function viewPatient(name) {
         h("button", { class: "btn", onclick: () => openFolderOnline(p.path) }, "☁︎ Cartella su OneDrive"))),
     p.files.length ? keys.map((k) => h("div", { class: "card" },
       k ? h("h4", {}, "📁 " + k) : h("h4", {}, "Documenti"),
-      h("ul", { class: "files" }, groups.get(k).map((f) =>
-        h("li", {}, h("button", { class: "file", onclick: () => openFile(f.path) },
-          h("span", { class: "ficon" }, icon(f.name)),
-          h("span", { class: "fbody" }, h("span", { class: "fname" }, f.name), h("span", { class: "fmeta" }, [f.date ? itDate(f.date) : "", fmtSize(f.size)].filter(Boolean).join(" · "))))))))) :
+      h("ul", { class: "files" }, groups.get(k).map((f) => fileRow(f))))) :
       h("div", { class: "card" }, h("p", { class: "muted" }, "Cartella vuota. Crea un documento o allega un file.")),
     h("div", { class: "card subtle" },
       h("button", { class: "btn small", onclick: () => hideFolder(p) }, "Nascondi dall'elenco"),
@@ -341,7 +357,7 @@ function viewReorder() {
       rows.length ? h("div", { class: "rlist" }, rowEls) : h("p", {}, "✅ Nessun file sciolto."),
       rows.length ? h("div", { class: "btnrow" }, h("button", { class: "btn primary", onclick: apply }, "Applica")) : null),
     S.sc.models.length ? h("div", { class: "card" }, h("h4", {}, "Modelli e carte intestate (restano dove sono)"),
-      h("ul", { class: "files" }, S.sc.models.map((f) => h("li", {}, h("button", { class: "file", onclick: () => openFile(f.path) }, h("span", { class: "ficon" }, icon(f.name)), h("span", { class: "fbody" }, h("span", { class: "fname" }, f.name))))))) : null);
+      h("ul", { class: "files" }, S.sc.models.map((f) => fileRow(f, false)))) : null);
 }
 
 // ---------- impostazioni ----------
@@ -356,8 +372,10 @@ function toPngDataUrl(file, maxW, removeWhite) {
       if (removeWhite) {
         const id = x.getImageData(0, 0, c.width, c.height), d = id.data;
         for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue; // già trasparente: resta trasparente
           const m = Math.min(d[i], d[i + 1], d[i + 2]);
-          d[i + 3] = m >= 235 ? 0 : m > 190 ? Math.round(255 * (235 - m) / 45) : 255;
+          const k = m >= 235 ? 0 : m > 190 ? (235 - m) / 45 : 1; // bianco → trasparente, sfumatura sui bordi
+          d[i + 3] = Math.round(d[i + 3] * k);
         }
         x.putImageData(id, 0, 0);
       }
@@ -407,7 +425,7 @@ function viewLayout() {
     const show = () => {
       box.replaceChildren(P[k] ? h("img", { src: P[k], alt: label }) : h("span", { class: "muted small" }, "nessuna immagine"));
       btns.replaceChildren(inp, h("button", { class: "btn small", onclick: () => inp.click() }, P[k] ? "Sostituisci" : "Carica foto / immagine"),
-        P[k] ? h("button", { class: "btn small", onclick: () => { P[k] = ""; show(); upd(); } }, "Rimuovi") : null);
+        P[k] ? h("button", { class: "btn small", onclick: () => { P[k] = ""; show(); upd(); } }, "Rimuovi") : "");
     };
     const inp = h("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
       if (!inp.files[0]) return;
@@ -439,8 +457,8 @@ function viewLayout() {
       h("div", { class: "grid2" }, text("luogo", "Luogo (accanto alla data)", "Milano"), text("piede", "Nota a piè di pagina"))),
     h("div", { class: "card" }, h("h3", {}, "Logo, firma e timbro"),
       imgBox("logoData", "Logo (facoltativo)", "Immagine con il tuo logo; resta com'è, senza togliere lo sfondo."),
-      imgBox("firmaData", "Firma", "Meglio su foglio bianco: lo sfondo bianco diventa trasparente."),
-      imgBox("timbroData", "Timbro", "Meglio su foglio bianco: lo sfondo bianco diventa trasparente.")),
+      imgBox("firmaData", "Firma (o firma + timbro in un'unica immagine)", "Se hai firma e timbro nello stesso PNG, caricalo qui e lascia vuoto il timbro. Le parti già trasparenti restano trasparenti; lo sfondo bianco viene reso trasparente."),
+      imgBox("timbroData", "Timbro (solo se separato dalla firma)", "Meglio su foglio bianco: lo sfondo bianco diventa trasparente.")),
     h("div", { class: "card" }, h("h3", {}, "Intestazione"),
       h("div", { class: "grid2" },
         sel("hAlign", "Posizione del testo", [["left", "In alto a sinistra"], ["center", "Al centro"], ["right", "In alto a destra"]]),
@@ -465,7 +483,7 @@ function viewLayout() {
       h("div", { class: "grid2" },
         sel("sigAlign", "Luogo, data e firma", [["right", "A destra"], ["center", "Al centro"], ["left", "A sinistra"]]),
         sel("stampSide", "Con firma e timbro insieme", [["left", "Timbro a sinistra, firma a destra"], ["right", "Firma a sinistra, timbro a destra"]])),
-      range("sigW", "Larghezza firma", 80, 300, " px"), range("stampW", "Larghezza timbro", 80, 300, " px")));
+      range("sigW", "Larghezza firma (o firma + timbro)", 80, 500, " px"), range("stampW", "Larghezza timbro", 80, 300, " px")));
 
   upd();
   return h("section", {},

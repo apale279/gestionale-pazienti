@@ -120,7 +120,7 @@ export async function buildDocx(profile, d, layout) {
     body.push(new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, borders: D.TableBorders.NONE,
       rows: [new D.TableRow({ children: L.stampSide === "right" ? [sign, stamp] : [stamp, sign] })] }));
   } else if (hasF || hasT) {
-    body.push(new D.Paragraph({ alignment: AL[L.sigAlign], children: [await imageRun(hasF ? p.firmaData : p.timbroData, hasF ? L.sigW : L.stampW, 90)] }));
+    body.push(new D.Paragraph({ alignment: AL[L.sigAlign], children: [await imageRun(hasF ? p.firmaData : p.timbroData, hasF ? L.sigW : L.stampW, 140)] }));
   }
   if (p.nome) body.push(new D.Paragraph({ alignment: AL[L.sigAlign], children: [new D.TextRun({ text: p.nome })] }));
 
@@ -156,7 +156,7 @@ export function previewHtml(profile, d, esc, layout) {
   const sigRow = p.firmaData && p.timbroData
     ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-direction:${L.stampSide === "right" ? "row-reverse" : "row"}"><img src="${p.timbroData}" style="max-width:${L.stampW}px;max-height:90px"><img src="${p.firmaData}" style="max-width:${L.sigW}px;max-height:80px"></div>`
     : p.firmaData || p.timbroData
-      ? `<div style="text-align:${L.sigAlign};margin-top:6px"><img src="${p.firmaData || p.timbroData}" style="max-width:${p.firmaData ? L.sigW : L.stampW}px;max-height:90px"></div>` : "";
+      ? `<div style="text-align:${L.sigAlign};margin-top:6px"><img src="${p.firmaData || p.timbroData}" style="max-width:${p.firmaData ? L.sigW : L.stampW}px;max-height:140px"></div>` : "";
   return `<div class="sheet" style="font-family:'${L.font}',Calibri,sans-serif;font-size:${px(L.bodySize)};padding:${pad}">
     <div style="${L.line ? `border-bottom:2px solid ${L.lineColor};` : ""}padding-bottom:8px;margin-bottom:14px">${head || "&nbsp;"}</div>
     <h3 style="text-align:${L.titleAlign};font-size:${px(L.bodySize + 3)}">${esc((d.titolo || d.tipo || "").toUpperCase())}</h3>

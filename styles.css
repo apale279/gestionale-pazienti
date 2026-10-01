@@ -108,3 +108,6 @@ input[type=color] { height: 44px; padding: 4px; }
   .designer-preview { position: static; order: -1; }
   #detail { padding: 12px; }
 }
+.frow { display: flex; align-items: center; gap: 8px; }
+.frow .file { flex: 1; min-width: 0; }
+.appbtn { flex: none; }
