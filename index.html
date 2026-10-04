@@ -14,12 +14,20 @@
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="stylesheet" href="styles.css">
+<link rel="preconnect" href="https://graph.microsoft.com">
+<link rel="preconnect" href="https://login.microsoftonline.com">
+<link rel="modulepreload" href="app.js">
+<link rel="modulepreload" href="config.js">
+<link rel="modulepreload" href="auth.js">
+<link rel="modulepreload" href="drive.js">
+<link rel="modulepreload" href="indexer.js">
+<link rel="modulepreload" href="docgen.js">
+<link rel="modulepreload" href="bmcdoc.js">
 </head>
 <body data-view="home">
 <div id="app"><div class="center"><div class="spinner"></div></div></div>
 <div id="toast" role="status"></div>
-<script src="vendor/msal-browser.min.js"></script>
-<script src="vendor/docx.umd.js"></script>
+<script defer src="vendor/msal-browser.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

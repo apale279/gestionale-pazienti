@@ -2,6 +2,17 @@
 // Il layout (allineamenti, font, dimensioni…) è configurabile dall'editor "Layout referti".
 import { sanitizeName } from "./indexer.js";
 
+// La libreria Word (740 KB) si carica solo quando serve davvero creare un documento.
+let docxLoading;
+export function ensureDocx() {
+  if (window.docx) return Promise.resolve();
+  return (docxLoading ||= new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "vendor/docx.umd.js"; s.onload = res; s.onerror = () => { docxLoading = null; rej(new Error("Impossibile caricare il generatore Word")); };
+    document.head.append(s);
+  }));
+}
+
 export const EMPTY_PROFILE = {
   nome: "", qualifica: "", indirizzo: "", telefono: "", email: "", extra: "",
   luogo: "", piede: "", firmaData: "", timbroData: "", logoData: "",
@@ -68,6 +79,7 @@ export function headerLines(p, L) {
 const hex = (c) => (c || "#444444").replace("#", "").toUpperCase();
 
 export async function buildDocx(profile, d, layout) {
+  await ensureDocx();
   const D = docx, L = mergeLayout(layout), p = profile;
   const AL = { left: D.AlignmentType.LEFT, center: D.AlignmentType.CENTER, right: D.AlignmentType.RIGHT };
   const NONE = { style: D.BorderStyle.NONE, size: 0, color: "FFFFFF" };

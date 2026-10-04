@@ -1,6 +1,6 @@
 // Referto "Medical report" per il cliente BMCh24: stessi campi del modello originale, impaginazione pulita.
 import { sanitizeName } from "./indexer.js";
-import { imageRun, itDate, todayISO } from "./docgen.js";
+import { imageRun, itDate, todayISO, ensureDocx } from "./docgen.js";
 
 export const DEFAULT_BMC = { logoData: "", titolo: "MEDICAL REPORT", direzione: "Dr Antonio Magliocca", medico: "", luogo: "" };
 
@@ -31,6 +31,7 @@ const visitLine = (d) => [itDate(d.dataVisita), d.luogoVisita].filter(Boolean).j
 
 // ---------------------------------------------------------------- Word
 export async function buildBmcDocx(d, bmc, profile) {
+  await ensureDocx();
   const D = docx;
   const NONE = { style: D.BorderStyle.NONE, size: 0, color: "FFFFFF" };
   const noB = { top: NONE, bottom: NONE, left: NONE, right: NONE };
