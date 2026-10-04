@@ -3,6 +3,7 @@
 //  - DemoDrive: dati inventati in memoria, per provare l'interfaccia
 // L'app NON cancella mai nulla: nessuna funzione di eliminazione esiste qui.
 import { getToken } from "./auth.js";
+import { mark } from "./perf.js";
 
 const BASE = "https://graph.microsoft.com/v1.0/me/drive";
 const enc = (p) => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
@@ -10,7 +11,7 @@ const join = (...parts) => parts.filter(Boolean).join("/");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function toItem(parentPath, x) {
-  return {
+  const it = {
     name: x.name,
     isFolder: !!x.folder,
     size: x.size || 0,
@@ -19,6 +20,9 @@ function toItem(parentPath, x) {
     driveId: (x.parentReference && x.parentReference.driveId) || "",
     path: join(parentPath, x.name),
   };
+  // contenuto già incluso (richiesta con $expand): evita una lettura in più
+  if (x.children) { it.children = x.children.map((c) => toItem(it.path, c)); it.childrenTruncated = !!x["children@odata.nextLink"]; }
+  return it;
 }
 
 export class GraphDrive {
@@ -27,7 +31,10 @@ export class GraphDrive {
   async api(url, opts = {}, retry = 0) {
     const token = await getToken();
     const headers = { Authorization: "Bearer " + token, ...(opts.headers || {}) };
+    const t0 = performance.now();
     const res = await fetch(url, { ...opts, headers });
+    const lbl = url.includes("$batch") ? `POST $batch (${JSON.parse(opts.body).requests.length} cartelle)` : `${opts.method || "GET"} ${url.replace("https://graph.microsoft.com/v1.0/me/drive", "").replace(/root:[^:?]*:/, "root:…:").slice(0, 60)}`;
+    mark("OneDrive: " + lbl + " → " + res.status, performance.now() - t0);
     if ((res.status === 429 || res.status === 503) && retry < 4) {
       const wait = (Number(res.headers.get("Retry-After")) || 2) * 1000;
       await sleep(wait);
@@ -63,8 +70,9 @@ export class GraphDrive {
 
   // Elenca molte cartelle con poche richieste ($batch di Graph, 20 alla volta).
   // Restituisce, per ogni percorso, l'elenco oppure null se la cartella non esiste / non è leggibile.
-  async listMany(paths) {
-    const SEL = "$top=200&$select=id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference";
+  async listMany(paths, expand = false) {
+    const F = "id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference";
+    const SEL = "$top=200&$select=" + F + (expand ? `&$expand=children($select=${F})` : "");
     const out = new Array(paths.length).fill(null);
     const chunks = [];
     for (let i = 0; i < paths.length; i += 20) chunks.push(i);
@@ -266,8 +274,13 @@ export class DemoDrive {
     }
     return out;
   }
-  async listMany(paths) {
-    return Promise.all(paths.map((p) => (p === this.root || this.nodes.has(p) ? this.list(p) : null)));
+  async listMany(paths, expand = false) {
+    return Promise.all(paths.map(async (p) => {
+      if (!(p === this.root || this.nodes.has(p))) return null;
+      const items = await this.list(p);
+      if (expand) for (const it of items) if (it.isFolder) it.children = await this.list(it.path);
+      return items;
+    }));
   }
   async stat(path) {
     const n = this.nodes.get(path);

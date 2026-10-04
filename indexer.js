@@ -36,23 +36,28 @@ function words(filename) {
 const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
 // ---------------------------------------------------------------------------
-// Legge tutte le cartelle-paziente a livelli (una richiesta cumulativa per livello, non una per cartella).
+// Legge tutte le cartelle-paziente. Le liste arrivano già con il contenuto di un livello in più ($expand),
+// così bastano pochi passaggi in sequenza invece di uno per ogni cartella.
 async function collectAll(drive, roots, onProgress) {
-  const result = new Map(roots.map((r) => [r, []]));
-  let frontier = roots.map((r) => ({ root: r, path: r, sub: "", depth: 0 }));
+  const result = new Map(roots.map((r) => [r.path, []]));
+  let frontier = roots.map((r) => ({ root: r.path, path: r.path, sub: "", depth: 0, items: r.items || null }));
   let known = frontier.length, done = 0;
   while (frontier.length) {
-    const lists = await drive.listMany(frontier.map((f) => f.path));
+    const need = frontier.filter((f) => !f.items);
+    if (need.length) {
+      const lists = await drive.listMany(need.map((f) => f.path), true);
+      need.forEach((f, i) => { f.items = lists[i] || []; });
+    }
     const next = [];
-    frontier.forEach((fr, i) => {
-      for (const x of lists[i] || []) {
+    for (const fr of frontier) {
+      for (const x of fr.items) {
         if (x.isFolder) {
-          if (fr.depth < 4 && !/^[.]/.test(x.name)) next.push({ root: fr.root, path: x.path, sub: join(fr.sub, x.name), depth: fr.depth + 1 });
+          if (fr.depth < 4 && !/^[.]/.test(x.name)) next.push({ root: fr.root, path: x.path, sub: join(fr.sub, x.name), depth: fr.depth + 1, items: x.children && !x.childrenTruncated ? x.children : null });
         } else if (x.name !== ".paziente.json") {
           result.get(fr.root).push({ ...x, sub: fr.sub, date: fileDate(x.name, x.modified) });
         }
       }
-    });
+    }
     done += frontier.length; known += next.length;
     onProgress(done, known);
     frontier = next;
@@ -65,33 +70,34 @@ export async function scan(drive, cfg, onProgress = () => {}) {
   const hidden = new Set([...(cfg.ignoredFolders || []), ...(cfg.hiddenFolders || [])].map((s) => s.toLowerCase()));
   const containers = new Set((cfg.extraPatientContainers || []).map((s) => s.toLowerCase()));
 
-  const [top, bmcTop] = await drive.listMany([root, cfg.bmcPath].filter(Boolean));
+  const [top, bmcTop] = await drive.listMany([root, cfg.bmcPath].filter(Boolean), true);
   if (!top) { const e = new Error("Cartella non trovata: " + root); e.status = 404; throw e; }
 
   const contItems = top.filter((it) => it.isFolder && containers.has(it.name.toLowerCase()));
-  const contLists = contItems.length ? await drive.listMany(contItems.map((c) => c.path)) : [];
+  const contLists = contItems.length ? await drive.listMany(contItems.map((c) => c.path), true) : [];
 
-  const patientFolders = []; // {name, path, container}
+  const patientFolders = []; // {name, path, container, items}
   const loose = [];
   for (const it of top) {
     const ln = it.name.toLowerCase();
     if (it.isFolder) {
       if (containers.has(ln)) {
         for (const sub of contLists[contItems.indexOf(it)] || []) {
-          if (sub.isFolder) { if (!hidden.has(sub.name.toLowerCase())) patientFolders.push({ name: sub.name, path: sub.path, container: it.name }); }
+          if (sub.isFolder) { if (!hidden.has(sub.name.toLowerCase())) patientFolders.push({ name: sub.name, path: sub.path, container: it.name, items: sub.children && !sub.childrenTruncated ? sub.children : null }); }
           else loose.push({ ...sub, container: it.name });
         }
       } else if (!/^[._]/.test(it.name) && !hidden.has(ln)) {
-        patientFolders.push({ name: it.name, path: it.path, container: "" });
+        patientFolders.push({ name: it.name, path: it.path, container: "", items: it.children && !it.childrenTruncated ? it.children : null });
       }
     } else {
       loose.push({ ...it, container: "" });
     }
   }
   // Pazienti BMC: una sottocartella per paziente (i file sciolti nella cartella BMC, es. contratti, si ignorano)
-  const bmcFolders = (bmcTop || []).filter((x) => x.isFolder && !/^[._]/.test(x.name) && !hidden.has(x.name.toLowerCase()));
+  const bmcFolders = (bmcTop || []).filter((x) => x.isFolder && !/^[._]/.test(x.name) && !hidden.has(x.name.toLowerCase()))
+    .map((x) => ({ ...x, items: x.children && !x.childrenTruncated ? x.children : null }));
 
-  const files = await collectAll(drive, [...patientFolders.map((f) => f.path), ...bmcFolders.map((f) => f.path)], onProgress);
+  const files = await collectAll(drive, [...patientFolders, ...bmcFolders], onProgress);
 
   // Unisce cartelle con lo stesso nome (es. una in radice e una in .Pazienti)
   const byKey = new Map();

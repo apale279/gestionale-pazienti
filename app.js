@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.js";
+import { mark, timed, report } from "./perf.js";
 import { initAuth, login, logout, getClientId, saveClientId } from "./auth.js";
 import { GraphDrive, DemoDrive } from "./drive.js";
 import { scan, buildPlan, applyPlan, sanitizeName, extOf, stripExt } from "./indexer.js";
@@ -47,7 +48,14 @@ const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.ma
 // ---------- stato ----------
 const S = { drive: null, st: { profile: { ...EMPTY_PROFILE }, layout: mergeLayout(), hiddenFolders: [] }, bmc: { ...DEFAULT_BMC }, meta: {}, filter: "all", sc: null, q: "", account: "" };
 const settingsPath = () => join(CONFIG.rootPath, CONFIG.appFolder, "impostazioni.json");
-const scanCfg = () => ({ ...CONFIG, hiddenFolders: S.st.hiddenFolders });
+// La scansione non dipende dalle impostazioni: le cartelle nascoste si tolgono dopo (così si parte subito, in parallelo).
+const scanCfg = () => ({ ...CONFIG, hiddenFolders: [] });
+function applyHidden(sc) {
+  const hid = new Set(S.st.hiddenFolders.map((x) => x.toLowerCase()));
+  if (!hid.size) return sc;
+  const keep = (p) => !p.folders.some((f) => hid.has(f.split("/").pop().toLowerCase()));
+  return { ...sc, patients: sc.patients.filter(keep), bmc: sc.bmc.filter(keep) };
+}
 const allPatients = () => (S.sc ? [...S.sc.patients, ...S.sc.bmc] : []);
 const patientByKey = (k) => allPatients().find((p) => p.path === k);
 
@@ -81,7 +89,8 @@ async function refresh(silent = false, soft = false) {
   const done = silent ? null : busy("Leggo la cartella pazienti…");
   setSync("↻ aggiornamento…");
   try {
-    S.sc = await scan(S.drive, scanCfg(), (i, n) => done && done.set(`Leggo la cartella pazienti… ${i}/${n}`));
+    const [sc] = await Promise.all([timed("elenco: lettura cartelle", () => scan(S.drive, scanCfg(), (i, n) => done && done.set(`Leggo la cartella pazienti… ${i}/${n}`))), S.stP]);
+    S.sc = applyHidden(sc);
     saveCache();
     setSync("Aggiornato alle " + new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }));
   } catch (e) {
@@ -121,6 +130,12 @@ function render() {
   renderList();
   const d = $("#detail");
   d.replaceChildren();
+  const needs = { nuovo: ["st"], layout: ["st"], bmc: ["st", "bmc"], impostazioni: ["st", "bmc"] }[r.name];
+  if (needs && !(S.stDone && (!needs.includes("bmc") || S.bmcDone))) {
+    d.append(h("div", { class: "card" }, h("div", { class: "spinner" })));
+    Promise.all([S.stP, S.bmcP]).then(() => render());
+    return;
+  }
   if (r.name === "p") d.append(viewPatient(r.arg));
   else if (r.name === "nuovo") d.append(viewNewDoc(r.arg));
   else if (r.name === "riordina") d.append(viewReorder());
@@ -442,6 +457,14 @@ function viewSettings() {
       h("p", { class: "muted" }, "Intestazione, firma, timbro e aspetto dei documenti si modificano nell'editor di layout."),
       h("a", { class: "btn primary", href: "#/layout" }, "✎ Layout referti")),
     cardBmcSettings(),
+    h("div", { class: "card" }, h("h4", {}, "Diagnostica velocità"),
+      h("p", { class: "muted small" }, "Mostra dove l'app impiega tempo all'avvio. Se è lenta, copia questo testo e mandalo a chi sta sistemando l'app."),
+      (() => {
+        const box = h("pre", { class: "diag" }, report());
+        return h("div", {}, box, h("div", { class: "btnrow wrap" },
+          h("button", { class: "btn small", onclick: () => { box.textContent = report(); } }, "Aggiorna"),
+          h("button", { class: "btn small", onclick: async () => { try { await navigator.clipboard.writeText(report()); toast("Copiato"); } catch { toast("Non riesco a copiare: seleziona il testo a mano", true); } } }, "Copia")));
+      })()),
     h("div", { class: "card" }, h("h4", {}, "Cartelle nascoste dall'elenco"), hiddenList),
     h("div", { class: "card" }, h("h4", {}, "Account"),
       h("p", { class: "muted small" }, S.drive.isDemo ? "Modalità demo" : `Collegato a OneDrive${S.account ? " come " + S.account : ""}. Cartella: ${CONFIG.rootPath}`),
@@ -745,16 +768,18 @@ function screen(...kids) { $("#app").replaceChildren(h("div", { class: "center" 
 async function startWith(drive) {
   S.drive = drive;
   buildShell();
+  // Impostazioni e dati BMC (con le immagini) si leggono in background: non bloccano la comparsa dell'elenco.
+  S.stP = timed("impostazioni: lettura", () => loadSettings()).finally(() => (S.stDone = true));
+  S.bmcP = timed("dati BMC: lettura", () => loadBmc()).finally(() => (S.bmcDone = true));
   const cached = drive.isDemo ? null : loadCache();
   if (cached) { // avvio immediato dalla copia salvata, poi aggiornamento silenzioso
-    S.sc = cached; render();
-    Promise.all([loadSettings(), loadBmc()]).then(() => refresh(true, true));
+    S.sc = applyHidden(cached); render(); mark("elenco pronto (da copia salvata)");
+    S.stP.then(() => { S.sc = applyHidden(S.sc); renderList(); });
+    refresh(true, true).then(() => mark("elenco aggiornato da OneDrive"));
     return;
   }
-  const done = busy("Avvio…");
-  await Promise.all([loadSettings(), loadBmc()]);
-  done();
   await refresh();
+  mark("elenco pronto (letto da OneDrive)");
 }
 
 async function boot() {

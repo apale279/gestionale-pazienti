@@ -1,6 +1,6 @@
 // Service worker: tiene in cache solo i file dell'app (mai i dati dei pazienti).
-const CACHE = "gp-shell-v7";
-const SHELL = ["./", "index.html", "styles.css", "app.js", "auth.js", "drive.js", "indexer.js", "docgen.js", "bmcdoc.js", "config.js",
+const CACHE = "gp-shell-v8";
+const SHELL = ["./", "index.html", "styles.css", "app.js", "auth.js", "drive.js", "indexer.js", "docgen.js", "bmcdoc.js", "config.js", "perf.js",
   "vendor/msal-browser.min.js", "vendor/docx.umd.js", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });

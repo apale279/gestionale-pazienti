@@ -1,5 +1,6 @@
 // Accesso a Microsoft (OneDrive) tramite MSAL, flusso "redirect" (adatto anche a iPhone).
 import { CONFIG } from "./config.js";
+import { timed } from "./perf.js";
 
 const SCOPES = ["Files.ReadWrite"];
 let pca = null;
@@ -23,8 +24,8 @@ export async function initAuth() {
     },
     cache: { cacheLocation: "localStorage" },
   });
-  await pca.initialize();
-  const res = await pca.handleRedirectPromise();
+  await timed("accesso: inizializzazione", () => pca.initialize());
+  const res = await timed("accesso: ritorno dal login", () => pca.handleRedirectPromise());
   if (res && res.account) pca.setActiveAccount(res.account);
   if (!pca.getActiveAccount()) {
     const all = pca.getAllAccounts();
@@ -46,7 +47,7 @@ export async function logout() {
 export async function getToken() {
   const account = pca.getActiveAccount();
   try {
-    const r = await pca.acquireTokenSilent({ scopes: SCOPES, account });
+    const r = await timed("accesso: token", () => pca.acquireTokenSilent({ scopes: SCOPES, account }));
     return r.accessToken;
   } catch (e) {
     await pca.acquireTokenRedirect({ scopes: SCOPES, account });
