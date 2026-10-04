@@ -35,30 +35,49 @@ function words(filename) {
 }
 const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
-async function pMap(items, limit, fn) {
-  const out = new Array(items.length);
-  let i = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
-  }));
-  return out;
+// ---------------------------------------------------------------------------
+// Legge tutte le cartelle-paziente a livelli (una richiesta cumulativa per livello, non una per cartella).
+async function collectAll(drive, roots, onProgress) {
+  const result = new Map(roots.map((r) => [r, []]));
+  let frontier = roots.map((r) => ({ root: r, path: r, sub: "", depth: 0 }));
+  let known = frontier.length, done = 0;
+  while (frontier.length) {
+    const lists = await drive.listMany(frontier.map((f) => f.path));
+    const next = [];
+    frontier.forEach((fr, i) => {
+      for (const x of lists[i] || []) {
+        if (x.isFolder) {
+          if (fr.depth < 4 && !/^[.]/.test(x.name)) next.push({ root: fr.root, path: x.path, sub: join(fr.sub, x.name), depth: fr.depth + 1 });
+        } else if (x.name !== ".paziente.json") {
+          result.get(fr.root).push({ ...x, sub: fr.sub, date: fileDate(x.name, x.modified) });
+        }
+      }
+    });
+    done += frontier.length; known += next.length;
+    onProgress(done, known);
+    frontier = next;
+  }
+  return result;
 }
 
-// ---------------------------------------------------------------------------
 export async function scan(drive, cfg, onProgress = () => {}) {
   const root = cfg.rootPath;
   const hidden = new Set([...(cfg.ignoredFolders || []), ...(cfg.hiddenFolders || [])].map((s) => s.toLowerCase()));
   const containers = new Set((cfg.extraPatientContainers || []).map((s) => s.toLowerCase()));
 
-  const top = await drive.list(root);
+  const [top, bmcTop] = await drive.listMany([root, cfg.bmcPath].filter(Boolean));
+  if (!top) { const e = new Error("Cartella non trovata: " + root); e.status = 404; throw e; }
+
+  const contItems = top.filter((it) => it.isFolder && containers.has(it.name.toLowerCase()));
+  const contLists = contItems.length ? await drive.listMany(contItems.map((c) => c.path)) : [];
+
   const patientFolders = []; // {name, path, container}
   const loose = [];
-
   for (const it of top) {
     const ln = it.name.toLowerCase();
     if (it.isFolder) {
       if (containers.has(ln)) {
-        for (const sub of await drive.list(it.path)) {
+        for (const sub of contLists[contItems.indexOf(it)] || []) {
           if (sub.isFolder) { if (!hidden.has(sub.name.toLowerCase())) patientFolders.push({ name: sub.name, path: sub.path, container: it.name }); }
           else loose.push({ ...sub, container: it.name });
         }
@@ -69,54 +88,29 @@ export async function scan(drive, cfg, onProgress = () => {}) {
       loose.push({ ...it, container: "" });
     }
   }
+  // Pazienti BMC: una sottocartella per paziente (i file sciolti nella cartella BMC, es. contratti, si ignorano)
+  const bmcFolders = (bmcTop || []).filter((x) => x.isFolder && !/^[._]/.test(x.name) && !hidden.has(x.name.toLowerCase()));
 
-  let done = 0;
-  const collect = async (path, sub, depth) => {
-    const out = [];
-    const items = await drive.list(path);
-    for (const x of items) {
-      if (x.isFolder) {
-        if (depth < 4 && !/^[.]/.test(x.name)) out.push(...await collect(x.path, join(sub, x.name), depth + 1));
-      } else if (x.name !== ".paziente.json") {
-        out.push({ ...x, sub, date: fileDate(x.name, x.modified) });
-      }
-    }
-    return out;
-  };
-
-  const results = await pMap(patientFolders, 6, async (pf) => {
-    const files = await collect(pf.path, "", 0);
-    onProgress(++done, patientFolders.length);
-    return { ...pf, files };
-  });
+  const files = await collectAll(drive, [...patientFolders.map((f) => f.path), ...bmcFolders.map((f) => f.path)], onProgress);
 
   // Unisce cartelle con lo stesso nome (es. una in radice e una in .Pazienti)
   const byKey = new Map();
-  for (const r of results) {
-    const k = norm(r.name);
+  for (const pf of patientFolders) {
+    const k = norm(pf.name), fl = files.get(pf.path);
     const ex = byKey.get(k);
-    if (!ex) byKey.set(k, { name: r.name, path: r.path, folders: [r.path], files: r.files, group: "" });
-    else { ex.folders.push(r.path); ex.files.push(...r.files); if (r.container === "") { ex.path = r.path; ex.name = r.name; } }
+    if (!ex) byKey.set(k, { name: pf.name, path: pf.path, folders: [pf.path], files: fl, group: "" });
+    else { ex.folders.push(pf.path); ex.files.push(...fl); if (pf.container === "") { ex.path = pf.path; ex.name = pf.name; } }
   }
+  const byDate = (a, b) => (b.date || "").localeCompare(a.date || "");
   const patients = [...byKey.values()].map((p) => {
-    p.files.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    p.files.sort(byDate);
     p.lastDate = p.files.length ? p.files[0].date : "";
     return p;
   }).sort((a, b) => a.name.localeCompare(b.name, "it"));
-
-  // Pazienti BMC: una sottocartella per paziente dentro la cartella BMC (i file sciolti, es. contratti, si ignorano)
-  let bmc = [];
-  if (cfg.bmcPath) {
-    try {
-      const folders = (await drive.list(cfg.bmcPath)).filter((x) => x.isFolder && !/^[._]/.test(x.name) && !hidden.has(x.name.toLowerCase()));
-      bmc = await pMap(folders, 6, async (f) => {
-        const files = await collect(f.path, "", 0);
-        files.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-        return { name: f.name, path: f.path, folders: [f.path], files, group: "BMC", lastDate: files.length ? files[0].date : "" };
-      });
-      bmc.sort((a, b) => a.name.localeCompare(b.name, "it"));
-    } catch (e) { if (e.status !== 404) throw e; }
-  }
+  const bmc = bmcFolders.map((f) => {
+    const fl = files.get(f.path).sort(byDate);
+    return { name: f.name, path: f.path, folders: [f.path], files: fl, group: "BMC", lastDate: fl.length ? fl[0].date : "" };
+  }).sort((a, b) => a.name.localeCompare(b.name, "it"));
 
   // Classifica i file sciolti: modelli (carta intestata, template…) oppure candidati ai pazienti
   const models = [], candidates = [];

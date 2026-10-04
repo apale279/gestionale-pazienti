@@ -59,15 +59,38 @@ async function loadSettings() {
 }
 const saveSettings = () => S.drive.writeJson(settingsPath(), S.st);
 
-async function refresh(silent = false) {
+// Copia dell'elenco salvata su questo dispositivo: l'app parte subito da qui e poi si aggiorna da OneDrive.
+const cacheKey = () => "gp_index_v1_" + (S.account || "x");
+function saveCache() {
+  if (S.drive.isDemo) return;
+  try { localStorage.setItem(cacheKey(), JSON.stringify({ t: Date.now(), sc: S.sc })); } catch {}
+}
+function loadCache() {
+  try {
+    const j = JSON.parse(localStorage.getItem(cacheKey()));
+    return j && j.sc && Array.isArray(j.sc.patients) && Array.isArray(j.sc.bmc) ? j.sc : null;
+  } catch { return null; }
+}
+function clearCaches() {
+  try { Object.keys(localStorage).filter((k) => k.startsWith("gp_index_v1_")).forEach((k) => localStorage.removeItem(k)); } catch {}
+}
+function setSync(t) { const el = $("#sync"); if (el) el.textContent = t; }
+
+// silent: senza schermata di attesa. soft: aggiorna solo l'elenco a sinistra (non tocca ciò che stai scrivendo).
+async function refresh(silent = false, soft = false) {
   const done = silent ? null : busy("Leggo la cartella pazienti…");
+  setSync("↻ aggiornamento…");
   try {
     S.sc = await scan(S.drive, scanCfg(), (i, n) => done && done.set(`Leggo la cartella pazienti… ${i}/${n}`));
+    saveCache();
+    setSync("Aggiornato alle " + new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }));
   } catch (e) {
     console.error(e);
+    if (soft && S.sc) { setSync("Non aggiornato: mostro i dati salvati"); return; }
     showFatal(e);
+    return;
   } finally { done && done(); }
-  render();
+  soft ? renderList() : render();
 }
 
 // ---------- shell ----------
@@ -120,7 +143,7 @@ function renderList() {
         h("input", { id: "q", type: "search", placeholder: "Cerca paziente o documento…", autocomplete: "off", value: S.q, oninput: (e) => { S.q = e.target.value; renderItems(); } }),
         h("a", { class: "btn primary", href: "#/paziente" }, "+ Nuovo"),
         h("a", { class: "btn", href: "#/paziente/bmc", title: "Nuovo paziente BMC" }, "+ BMC")),
-      h("div", { id: "chips", class: "chips" }), h("div", { id: "banner" }), h("div", { id: "items" }));
+      h("div", { id: "chips", class: "chips" }), h("div", { id: "sync", class: "sync" }), h("div", { id: "banner" }), h("div", { id: "items" }));
   }
   const nl = S.sc.loose.length;
   $("#banner").replaceChildren(nl ? h("a", { class: "banner", href: "#/riordina" }, `⚠︎ ${nl} file sciolti da sistemare ›`) : "");
@@ -422,7 +445,9 @@ function viewSettings() {
     h("div", { class: "card" }, h("h4", {}, "Cartelle nascoste dall'elenco"), hiddenList),
     h("div", { class: "card" }, h("h4", {}, "Account"),
       h("p", { class: "muted small" }, S.drive.isDemo ? "Modalità demo" : `Collegato a OneDrive${S.account ? " come " + S.account : ""}. Cartella: ${CONFIG.rootPath}`),
-      S.drive.isDemo ? null : h("button", { class: "btn", onclick: () => logout() }, "Esci")));
+      S.drive.isDemo ? null : h("div", { class: "btnrow wrap" },
+        h("button", { class: "btn", onclick: () => { clearCaches(); toast("Dati salvati su questo dispositivo cancellati"); } }, "Cancella dati salvati su questo dispositivo"),
+        h("button", { class: "btn", onclick: () => { clearCaches(); logout(); } }, "Esci"))));
 }
 
 // ---------- editor di layout ----------
@@ -720,9 +745,14 @@ function screen(...kids) { $("#app").replaceChildren(h("div", { class: "center" 
 async function startWith(drive) {
   S.drive = drive;
   buildShell();
+  const cached = drive.isDemo ? null : loadCache();
+  if (cached) { // avvio immediato dalla copia salvata, poi aggiornamento silenzioso
+    S.sc = cached; render();
+    Promise.all([loadSettings(), loadBmc()]).then(() => refresh(true, true));
+    return;
+  }
   const done = busy("Avvio…");
-  await loadSettings();
-  await loadBmc();
+  await Promise.all([loadSettings(), loadBmc()]);
   done();
   await refresh();
 }

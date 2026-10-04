@@ -61,6 +61,39 @@ export class GraphDrive {
     return out;
   }
 
+  // Elenca molte cartelle con poche richieste ($batch di Graph, 20 alla volta).
+  // Restituisce, per ogni percorso, l'elenco oppure null se la cartella non esiste / non è leggibile.
+  async listMany(paths) {
+    const SEL = "$top=200&$select=id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference";
+    const out = new Array(paths.length).fill(null);
+    const chunks = [];
+    for (let i = 0; i < paths.length; i += 20) chunks.push(i);
+    await Promise.all(chunks.map(async (i) => {
+      const chunk = paths.slice(i, i + 20);
+      try {
+        const res = await this.json("https://graph.microsoft.com/v1.0/$batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requests: chunk.map((p, k) => ({ id: String(k), method: "GET", url: `/me/drive/root:/${enc(p)}:/children?${SEL}` })) }),
+        });
+        for (const r of res.responses) {
+          const idx = i + Number(r.id);
+          if (r.status === 200) {
+            const items = r.body.value.map((x) => toItem(paths[idx], x));
+            let next = r.body["@odata.nextLink"];
+            while (next) { const j = await this.json(next); items.push(...j.value.map((x) => toItem(paths[idx], x))); next = j["@odata.nextLink"]; }
+            out[idx] = items;
+          } else if (r.status !== 404) {
+            out[idx] = await this.list(paths[idx]).catch(() => null); // es. limite di richieste: riprova singolarmente
+          }
+        }
+      } catch (e) {
+        for (let k = 0; k < chunk.length; k++) out[i + k] = await this.list(chunk[k]).catch(() => null);
+      }
+    }));
+    return out;
+  }
+
   async stat(path) {
     try {
       const x = await this.json(`${this.ref(path)}?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference`);
@@ -232,6 +265,9 @@ export class DemoDrive {
       out.push({ name: rest, isFolder: n.isFolder, size: n.size, modified: n.modified, webUrl: "", path: p });
     }
     return out;
+  }
+  async listMany(paths) {
+    return Promise.all(paths.map((p) => (p === this.root || this.nodes.has(p) ? this.list(p) : null)));
   }
   async stat(path) {
     const n = this.nodes.get(path);
