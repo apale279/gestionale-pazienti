@@ -53,7 +53,7 @@ export function dataUrlToBytes(url) {
   for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
   return u;
 }
-function imgSize(url) {
+export function imgSize(url) {
   return new Promise((res) => { const i = new Image(); i.onload = () => res({ w: i.naturalWidth, h: i.naturalHeight }); i.onerror = () => res({ w: 1, h: 1 }); i.src = url; });
 }
 export async function imageRun(url, maxW, maxH) {

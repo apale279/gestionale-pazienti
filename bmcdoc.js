@@ -12,22 +12,22 @@ export const EMPTY_BMC_DOC = () => ({
 });
 
 // Testi fissi del modello originale
-const CONSENSO_1 = "Presa visione dell’informativa di cui all’Art. 13 del Reg. UE 679/2016, il paziente:";
-const CONSENSO_2 = "Rilascia il consenso al trattamento dei dati personali, anche sensibili, per finalità amministrative e di cura";
-const CONSENSO_3 = "(i dati saranno trattati per l’adeguata erogazione delle prestazioni sanitarie, nonché per il corretto assolvimento degli adempimenti amministrativi, burocratici, fiscali, e per lo svolgimento di tutte le attività inerenti al rapporto in essere).";
+export const CONSENSO_1 = "Presa visione dell’informativa di cui all’Art. 13 del Reg. UE 679/2016, il paziente:";
+export const CONSENSO_2 = "Rilascia il consenso al trattamento dei dati personali, anche sensibili, per finalità amministrative e di cura";
+export const CONSENSO_3 = "(i dati saranno trattati per l’adeguata erogazione delle prestazioni sanitarie, nonché per il corretto assolvimento degli adempimenti amministrativi, burocratici, fiscali, e per lo svolgimento di tutte le attività inerenti al rapporto in essere).";
 
 export function bmcFileName(d) {
   return `${(d.dataVisita || todayISO()).replace(/-/g, "_")}_BMC Medical report_${sanitizeName(d.paziente || "Paziente")}.docx`;
 }
 
-const lines = (s) => String(s || "").split("\n");
-const vitals = (d) => [
+export const lines = (s) => String(s || "").split("\n");
+export const vitals = (d) => [
   `P.A. ${d.pa1 || "____"}/${d.pa2 || "____"} mmHg`,
   `F.C. ${d.fc || "____"} /min`,
   `T°: ${d.temp ? d.temp + " °C" : "____ °C"}`,
   `SpO2: ${d.spo2 ? d.spo2 + " %" : "____ %"}`,
 ];
-const visitLine = (d) => [itDate(d.dataVisita), d.luogoVisita].filter(Boolean).join(", ");
+export const visitLine = (d) => [itDate(d.dataVisita), d.luogoVisita].filter(Boolean).join(", ");
 
 // ---------------------------------------------------------------- Word
 export async function buildBmcDocx(d, bmc, profile) {

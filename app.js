@@ -3,8 +3,16 @@ import { mark, timed, report } from "./perf.js";
 import { initAuth, login, logout, getClientId, saveClientId } from "./auth.js";
 import { GraphDrive, DemoDrive } from "./drive.js";
 import { scan, buildPlan, applyPlan, sanitizeName, extOf, stripExt } from "./indexer.js";
+import { buildPdf, buildBmcPdf } from "./pdfgen.js";
 import { DEFAULT_BMC, EMPTY_BMC_DOC, buildBmcDocx, bmcFileName, bmcHtml, printHtml } from "./bmcdoc.js";
 import { buildDocx, docFileName, previewHtml, itDate, todayISO, EMPTY_PROFILE, DEFAULT_LAYOUT, FONTS, mergeLayout } from "./docgen.js";
+
+// Cartella scelta su questo dispositivo (se l'app non trovava quella predefinita)
+try {
+  const r = localStorage.getItem("gp_root"), b = localStorage.getItem("gp_bmc");
+  if (r) CONFIG.rootPath = r;
+  if (b) CONFIG.bmcPath = b;
+} catch {}
 
 // ---------- utilità ----------
 const join = (...p) => p.filter(Boolean).join("/");
@@ -89,7 +97,8 @@ async function refresh(silent = false, soft = false) {
   const done = silent ? null : busy("Leggo la cartella pazienti…");
   setSync("↻ aggiornamento…");
   try {
-    const [sc] = await Promise.all([timed("elenco: lettura cartelle", () => scan(S.drive, scanCfg(), (i, n) => done && done.set(`Leggo la cartella pazienti… ${i}/${n}`))), S.stP]);
+    const sc = await timed("elenco: lettura cartelle", () => scan(S.drive, scanCfg(), (i, n) => done && done.set(`Leggo la cartella pazienti… ${i}/${n}`)));
+    S.raw = sc;
     S.sc = applyHidden(sc);
     saveCache();
     setSync("Aggiornato alle " + new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }));
@@ -214,7 +223,8 @@ function fileRow(f, withMeta = true) {
     h("button", { class: "file", onclick: () => openFile(f) },
       h("span", { class: "ficon" }, icon(f.name)),
       h("span", { class: "fbody" }, h("span", { class: "fname" }, f.name), withMeta ? h("span", { class: "fmeta" }, [f.date ? itDate(f.date) : "", fmtSize(f.size)].filter(Boolean).join(" · ")) : null)),
-    ap ? h("a", { class: "btn small appbtn", href: ap.href, title: "Apri nell'app " + ap.label + " (sperimentale)" }, ap.label) : null);
+    ap ? h("a", { class: "btn small appbtn", href: ap.href, title: "Apri nell'app " + ap.label + " (sperimentale)" }, ap.label) : null,
+    h("button", { class: "btn small appbtn", title: "Condividi", onclick: () => shareExisting(f) }, "📤"));
 }
 async function openFolderOnline(path) {
   const w = window.open("", "_blank");
@@ -355,10 +365,10 @@ function viewNewDoc(key) {
     syncLines();
   });
   const noProfile = !S.st.profile.nome;
-  const make = async () => {
-    const done = busy("Creo il documento…");
-    try { const blob = await buildDocx(S.st.profile, d, S.st.layout); done(); return blob; } catch (e) { done(); console.error(e); toast("Errore nella creazione: " + e.message, true); return null; }
-  };
+  const base = () => docFileName(d);
+  const makeDocx = () => buildDocx(S.st.profile, d, S.st.layout);
+  const makePdf = () => buildPdf(S.st.profile, d, S.st.layout);
+  const shareBtn = shareButton(makePdf, () => pdfNameOf(base()), "application/pdf", () => JSON.stringify(d));
   return h("section", {},
     h("div", { class: "card" },
       h("h2", {}, "Nuovo documento"), h("p", { class: "muted" }, "Paziente: " + p.name),
@@ -367,15 +377,63 @@ function viewNewDoc(key) {
       h("label", {}, "Titolo", tit), anagBox, h("label", {}, "Testo", ta),
       h("div", { class: "btnrow wrap" },
         h("a", { class: "btn", href: "#/p/" + encodeURIComponent(p.path) }, "Annulla"),
-        h("button", { class: "btn", onclick: async () => { const b = await make(); if (b) saveBlob(b, docFileName(d)); } }, "⬇︎ Scarica"),
+        shareBtn,
+        h("button", { class: "btn", onclick: async () => { const b = await guard(makePdf); if (b) saveBlob(b, pdfNameOf(base())); } }, "⬇︎ PDF"),
+        h("button", { class: "btn", onclick: async () => { const b = await guard(makeDocx); if (b) saveBlob(b, base()); } }, "⬇︎ Word"),
         h("button", { class: "btn primary", onclick: async () => {
-          const b = await make(); if (!b) return;
-          const done = busy("Salvo nella cartella del paziente…");
-          try { await S.drive.upload(p.path, docFileName(d), b); toast("Documento salvato"); }
+          const r = await guard(() => Promise.all([makeDocx(), makePdf()])); if (!r) return;
+          const done = busy("Salvo Word e PDF nella cartella del paziente…");
+          try { await S.drive.upload(p.path, base(), r[0]); await S.drive.upload(p.path, pdfNameOf(base()), r[1]); toast("Salvati Word e PDF"); }
           catch (e) { done(); return toast("Errore nel salvataggio: " + e.message, true); }
           done(); await refresh(true); location.hash = "#/p/" + encodeURIComponent(p.path);
-        } }, "Salva su OneDrive"))),
+        } }, "Salva su OneDrive (Word + PDF)"))),
     h("div", { class: "card" }, h("h4", {}, "Anteprima"), prev));
+}
+async function guard(fn) {
+  const done = busy("Creo il documento…");
+  try { return await fn(); } catch (e) { console.error(e); toast("Errore nella creazione: " + e.message, true); return null; } finally { done(); }
+}
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const pdfNameOf = (docxName) => docxName.replace(/\.docx$/i, ".pdf");
+// Condivisione col foglio di sistema (iPhone, Mac, Android, Windows con Edge/Chrome)
+async function shareBlob(blob, name, mime) {
+  const data = { files: [new File([blob], name, { type: mime })], title: name };
+  if (!(navigator.canShare && navigator.canShare(data))) return "unsupported";
+  try { await navigator.share(data); return "ok"; } catch (e) { return e.name === "AbortError" ? "ok" : e.name === "NotAllowedError" ? "gesture" : "unsupported"; }
+}
+// Pulsante "Condividi": prepara il file e lo condivide. Se il telefono chiede un nuovo tocco, il file resta pronto.
+function shareButton(makeBlob, nameFn, mime, keyFn) {
+  let ready = null;
+  const label = "📤 Condividi";
+  const btn = h("button", { class: "btn" }, label);
+  btn.addEventListener("click", async () => {
+    const key = keyFn();
+    if (!ready || ready.key !== key) {
+      const b = await guard(makeBlob); if (!b) return;
+      ready = { key, blob: b };
+    }
+    const r = await shareBlob(ready.blob, nameFn(), mime);
+    if (r === "gesture") { btn.textContent = "📤 Tocca per condividere"; return; }
+    btn.textContent = label;
+    if (r !== "ok") { saveBlob(ready.blob, nameFn()); toast("Condivisione non disponibile su questo dispositivo: file scaricato"); }
+    ready = null;
+  });
+  return btn;
+}
+const shareCache = new Map();
+async function shareExisting(f) {
+  let blob = shareCache.get(f.path);
+  if (!blob) {
+    const done = busy("Preparo il file…");
+    try { blob = await S.drive.blob(f.path); } catch (e) { done(); return toast("Errore: " + e.message, true); }
+    done(); shareCache.set(f.path, blob);
+  }
+  const ext = extOf(f.name);
+  const mime = VIEW_MIME[ext] || (ext === "docx" ? DOCX_MIME : blob.type || "application/octet-stream");
+  const r = await shareBlob(blob, f.name, mime);
+  if (r === "gesture") return toast("Tocca di nuovo 📤 per condividere");
+  shareCache.delete(f.path);
+  if (r !== "ok") { saveBlob(blob, f.name); toast("Condivisione non disponibile su questo dispositivo: file scaricato"); }
 }
 function saveBlob(blob, name) {
   const a = h("a", { href: URL.createObjectURL(blob), download: name });
@@ -457,6 +515,11 @@ function viewSettings() {
       h("p", { class: "muted" }, "Intestazione, firma, timbro e aspetto dei documenti si modificano nell'editor di layout."),
       h("a", { class: "btn primary", href: "#/layout" }, "✎ Layout referti")),
     cardBmcSettings(),
+    h("div", { class: "card" }, h("h4", {}, "Cartella OneDrive"),
+      h("p", { class: "muted small" }, `Pazienti: ${CONFIG.rootPath} · BMC: ${CONFIG.bmcPath}`),
+      h("div", { class: "btnrow wrap" },
+        h("button", { class: "btn small", onclick: () => pickFolder() }, "Cambia cartella"),
+        h("button", { class: "btn small", onclick: () => { try { localStorage.removeItem("gp_root"); localStorage.removeItem("gp_bmc"); } catch {} location.reload(); } }, "Ripristina predefinita"))),
     h("div", { class: "card" }, h("h4", {}, "Diagnostica velocità"),
       h("p", { class: "muted small" }, "Mostra dove l'app impiega tempo all'avvio. Se è lenta, copia questo testo e mandalo a chi sta sistemando l'app."),
       (() => {
@@ -697,22 +760,22 @@ function viewBmcDoc(key) {
     h("label", { class: "check" }, h("input", { type: "checkbox", checked: d.conFirma, onchange: (e) => { d.conFirma = e.target.checked; upd(); } }), " Inserisci la mia firma e il mio timbro"),
     S.bmc.logoData ? null : h("a", { class: "banner", href: "#/impostazioni" }, "⚠︎ Logo BMCh24 non impostato › "));
 
-  const make = async () => {
-    const done = busy("Creo il documento…");
-    try { const b = await buildBmcDocx(d, S.bmc, S.st.profile); done(); return b; } catch (e) { done(); console.error(e); toast("Errore nella creazione: " + e.message, true); return null; }
-  };
-  const buttons = h("div", { class: "btnrow wrap" },
+  const makeDocx = () => buildBmcDocx(d, S.bmc, S.st.profile);
+  const makePdf = () => buildBmcPdf(d, S.bmc, S.st.profile);
+  const shareBtn = shareButton(makePdf, () => pdfNameOf(bmcFileName(d)), "application/pdf", () => JSON.stringify(d));
+  form.append(h("div", { class: "btnrow wrap" },
     h("a", { class: "btn", href: "#/p/" + encodeURIComponent(p.path) }, "Annulla"),
-    h("button", { class: "btn", onclick: () => { if (!printHtml(bmcHtml(d, S.bmc, S.st.profile, esc), "Medical report")) toast("Il browser ha bloccato la finestra: consenti i popup", true); } }, "🖨 Stampa / PDF"),
-    h("button", { class: "btn", onclick: async () => { const b = await make(); if (b) saveBlob(b, bmcFileName(d)); } }, "⬇︎ Scarica Word"),
+    shareBtn,
+    h("button", { class: "btn", onclick: () => { if (!printHtml(bmcHtml(d, S.bmc, S.st.profile, esc), "Medical report")) toast("Il browser ha bloccato la finestra: consenti i popup", true); } }, "🖨 Stampa"),
+    h("button", { class: "btn", onclick: async () => { const b = await guard(makePdf); if (b) saveBlob(b, pdfNameOf(bmcFileName(d))); } }, "⬇︎ PDF"),
+    h("button", { class: "btn", onclick: async () => { const b = await guard(makeDocx); if (b) saveBlob(b, bmcFileName(d)); } }, "⬇︎ Word"),
     h("button", { class: "btn primary", onclick: async () => {
-      const b = await make(); if (!b) return;
-      const done = busy("Salvo nella cartella del paziente…");
-      try { await S.drive.upload(p.path, bmcFileName(d), b); toast("Referto salvato"); }
+      const r = await guard(() => Promise.all([makeDocx(), makePdf()])); if (!r) return;
+      const done = busy("Salvo Word e PDF nella cartella del paziente…");
+      try { await S.drive.upload(p.path, bmcFileName(d), r[0]); await S.drive.upload(p.path, pdfNameOf(bmcFileName(d)), r[1]); toast("Salvati Word e PDF"); }
       catch (e) { done(); return toast("Errore nel salvataggio: " + e.message, true); }
       done(); await refresh(true); location.hash = "#/p/" + encodeURIComponent(p.path);
-    } }, "Salva su OneDrive"));
-  form.append(buttons);
+    } }, "Salva su OneDrive (Word + PDF)")));
   upd();
 
   // Dati anagrafici del paziente (se inseriti) precompilano il modulo
@@ -757,10 +820,43 @@ async function loadBmc() {
 
 // ---------- avvio ----------
 function showFatal(e) {
+  if (e && e.status === 404 && S.drive && !S.drive.isDemo) return noFolderScreen();
   $("#app").replaceChildren(h("div", { class: "center" }, h("div", { class: "card" },
     h("h2", {}, "Qualcosa non va"),
-    h("p", {}, e && e.status === 404 ? `Non trovo la cartella “${CONFIG.rootPath}” nel tuo OneDrive. Controlla il percorso in config.js.` : String(e && e.message || e)),
+    h("p", {}, String((e && e.message) || e)),
     h("button", { class: "btn primary", onclick: () => location.reload() }, "Riprova"))));
+}
+
+function noFolderScreen() {
+  screen(h("h2", {}, "Non trovo la cartella pazienti"),
+    h("p", {}, "Account collegato: ", h("b", {}, S.account || "sconosciuto")),
+    h("p", { class: "muted" }, `In questo OneDrive non esiste la cartella “${CONFIG.rootPath}”. Di solito significa che hai fatto l'accesso con un account diverso da quello dei pazienti (ad esempio quello di lavoro o dell'università), oppure che la cartella ha un altro percorso.`),
+    h("div", { class: "btnrow wrap" },
+      h("button", { class: "btn", onclick: () => { clearCaches(); logout(); } }, "Accedi con un altro account"),
+      h("button", { class: "btn primary", onclick: () => pickFolder() }, "Scegli la cartella")));
+}
+
+// Sceglie la cartella dei pazienti navigando nel OneDrive (valida solo su questo dispositivo)
+async function pickFolder() {
+  let path = "";
+  const cur = h("div", { class: "muted small" }), listEl = h("div", { class: "files" });
+  const useBtn = h("button", { class: "btn primary", onclick: () => {
+    if (!path) return toast("Entra nella cartella dei pazienti", true);
+    try { localStorage.setItem("gp_root", path); localStorage.setItem("gp_bmc", join(path.split("/").slice(0, -1).join("/"), "BMC")); } catch {}
+    location.reload();
+  } }, "Usa questa cartella");
+  const close = modal("Scegli la cartella dei pazienti", h("div", {}, cur, listEl), [h("button", { class: "btn", onclick: () => close() }, "Annulla"), useBtn]);
+  const show = async () => {
+    cur.textContent = "OneDrive" + (path ? " / " + path.split("/").join(" / ") : "");
+    listEl.replaceChildren(h("div", { class: "spinner" }));
+    let items = [];
+    try { items = (await S.drive.list(path)).filter((x) => x.isFolder).sort((a, b) => a.name.localeCompare(b.name, "it")); } catch (e) { toast("Errore: " + e.message, true); }
+    listEl.replaceChildren(
+      path ? h("button", { class: "file", onclick: () => { path = path.split("/").slice(0, -1).join("/"); show(); } }, h("span", { class: "ficon" }, "↩︎"), h("span", { class: "fbody" }, "Indietro")) : "",
+      ...items.map((x) => h("button", { class: "file", onclick: () => { path = x.path; show(); } }, h("span", { class: "ficon" }, "📁"), h("span", { class: "fbody" }, x.name))),
+      items.length ? "" : h("p", { class: "muted small" }, "Nessuna sottocartella."));
+  };
+  show();
 }
 
 function screen(...kids) { $("#app").replaceChildren(h("div", { class: "center" }, h("div", { class: "card login" }, ...kids))); }
@@ -773,13 +869,14 @@ async function startWith(drive) {
   S.bmcP = timed("dati BMC: lettura", () => loadBmc()).finally(() => (S.bmcDone = true));
   const cached = drive.isDemo ? null : loadCache();
   if (cached) { // avvio immediato dalla copia salvata, poi aggiornamento silenzioso
-    S.sc = applyHidden(cached); render(); mark("elenco pronto (da copia salvata)");
-    S.stP.then(() => { S.sc = applyHidden(S.sc); renderList(); });
+    S.raw = cached; S.sc = applyHidden(cached); render(); mark("elenco pronto (da copia salvata)");
+    S.stP.then(() => { S.sc = applyHidden(S.raw); renderList(); });
     refresh(true, true).then(() => mark("elenco aggiornato da OneDrive"));
     return;
   }
   await refresh();
   mark("elenco pronto (letto da OneDrive)");
+  S.stP.then(() => { if (S.raw) { S.sc = applyHidden(S.raw); renderList(); } }); // cartelle nascoste, appena lette le impostazioni
 }
 
 async function boot() {
