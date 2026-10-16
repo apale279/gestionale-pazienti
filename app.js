@@ -322,6 +322,12 @@ function viewNewPatient(isBmc) {
         if (dup) { toast("Esiste già: apro la scheda"); location.hash = "#/p/" + encodeURIComponent(dup.path); return; }
         const done = busy("Creo la cartella…");
         try { await S.drive.ensureFolder(root); await S.drive.mkdir(root, name); } catch (e) { done(); return toast("Errore: " + e.message, true); }
+        try { // nome e cognome vanno anche nell'anagrafica: non si digitano due volte
+          const np = { path: join(root, name) };
+          const meta = { id: "", anagrafica: { cognome: cog.value.trim(), nome: nom.value.trim() }, readError: "" };
+          await saveMeta(np, meta);
+          S.meta[np.path] = Promise.resolve(meta);
+        } catch (e) { toast("Paziente creato, ma non riesco a salvare l'anagrafica: " + e.message, true); }
         done(); await refresh(true);
         location.hash = "#/p/" + encodeURIComponent(join(root, name));
       } }, "Crea paziente")));
@@ -688,6 +694,10 @@ function cardAnagrafica(p) {
   };
   const edit = (meta) => {
     const a = { ...meta.anagrafica };
+    if (!a.cognome && !a.nome) { // paziente creato prima: propongo cognome e nome dal nome della cartella ("Cognome Nome")
+      const parts = p.name.trim().split(" ").filter(Boolean);
+      a.cognome = parts[0] || ""; a.nome = parts.slice(1).join(" ");
+    }
     const inputs = ANAG_FIELDS.map(([k, l, t]) => k === "sesso"
       ? h("label", {}, l, h("select", { onchange: (e) => (a[k] = e.target.value) }, [["", "—"], ["M", "Maschio"], ["F", "Femmina"]].map(([v, tx]) => h("option", { value: v, selected: a[k] === v }, tx))))
       : h("label", {}, l, h("input", { type: t || "text", value: a[k] || "", autocomplete: "off", oninput: (e) => (a[k] = e.target.value) })));
