@@ -50,7 +50,14 @@ export async function getToken() {
     const r = await timed("accesso: token", () => pca.acquireTokenSilent({ scopes: SCOPES, account }));
     return r.accessToken;
   } catch (e) {
-    await pca.acquireTokenRedirect({ scopes: SCOPES, account });
-    throw new Error("Rinnovo accesso in corso…");
+    // Si va alla pagina di login Microsoft solo se serve davvero un nuovo accesso.
+    // Senza rete NON si deve uscire dall'app (il browser mostrerebbe una pagina d'errore).
+    const needsLogin = (msal.InteractionRequiredAuthError && e instanceof msal.InteractionRequiredAuthError)
+      || /interaction_required|login_required|consent_required|no_tokens_found|invalid_grant/i.test(String((e && (e.errorCode || e.message)) || ""));
+    if (needsLogin) {
+      await pca.acquireTokenRedirect({ scopes: SCOPES, account });
+      throw new Error("Rinnovo accesso in corso…");
+    }
+    throw new Error(navigator.onLine === false ? "Sei offline: nessuna connessione a OneDrive." : "Connessione a Microsoft non riuscita. Riprova tra poco.");
   }
 }
